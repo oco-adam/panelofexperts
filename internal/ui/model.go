@@ -523,9 +523,7 @@ func (m *Model) updateResults(msg tea.KeyMsg) tea.Cmd {
 func (m *Model) refreshRunViews() {
 	m.syncBriefViewportLayout()
 	m.syncMonitorViewportLayout()
-	if m.resultViewport.Width() > 0 {
-		m.resultViewport.SetContent(m.resultContent())
-	}
+	m.syncResultsViewportLayout()
 }
 
 func (m Model) viewSetup() string {
@@ -691,10 +689,11 @@ func (m Model) viewResults() string {
 	}
 	lines = append(lines,
 		"",
+		m.successStyle.Render("Final proposal ready. Review the markdown below or use the saved file paths above."),
+		m.mutedStyle.Render("Use up/down or j/k to scroll. Press m to return to the monitor, q to quit."),
+		"",
 		m.renderDivider("Final Markdown"),
 		m.renderPanel("Final Markdown", m.resultViewport.View(), m.width-4, "42"),
-		"",
-		m.mutedStyle.Render("Press m to return to the monitor, q to quit."),
 	)
 	if m.err != "" && m.err != failureSummary {
 		lines = append(lines, "", m.errorStyle.Render(m.err))
@@ -848,6 +847,24 @@ func (m *Model) syncMonitorViewportLayout() {
 	m.statusViewport.SetContent(m.statusContent())
 	m.timelineView.SetContent(m.timelineContent())
 	m.timelineView.GotoBottom()
+}
+
+func (m *Model) syncResultsViewportLayout() {
+	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.resultViewport.Width() == 0 {
+		return
+	}
+
+	m.resultViewport.SetContent(m.resultContent())
+	bestHeight := 2
+	maxHeight := max(2, m.height)
+	for candidate := maxHeight; candidate >= 2; candidate-- {
+		m.resultViewport.SetHeight(candidate)
+		if lipgloss.Height(m.viewResults()) <= m.height {
+			bestHeight = candidate
+			break
+		}
+	}
+	m.resultViewport.SetHeight(bestHeight)
 }
 
 func (m Model) currentFailureSummary() string {
