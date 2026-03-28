@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
@@ -12,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"panelofexperts/internal/appenv"
 	"panelofexperts/internal/model"
 	"panelofexperts/internal/orchestrator"
 	"panelofexperts/internal/render"
@@ -1105,5 +1105,5 @@ func preferredManager(available []model.ProviderID) model.ProviderID {
 }
 
 func OutputRoot(cwd string) string {
-	return filepath.Join(cwd, ".panel-of-experts", "runs")
+	return appenv.WorkspaceOutputRoot(cwd)
 }

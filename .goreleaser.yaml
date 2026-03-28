@@ -1,0 +1,36 @@
+version: 2
+
+project_name: poe
+
+builds:
+  - id: poe
+    main: ./cmd/poe
+    binary: poe
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X panelofexperts/internal/buildinfo.version={{ .Version }} -X panelofexperts/internal/buildinfo.commit={{ .Commit }} -X panelofexperts/internal/buildinfo.date={{ .Date }} -X panelofexperts/internal/buildinfo.builtBy=goreleaser
+
+archives:
+  - id: poe
+    builds:
+      - poe
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  draft: true
+  prerelease: auto
+  name_template: "{{ .ProjectName }} {{ .Version }}"

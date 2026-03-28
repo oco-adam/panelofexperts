@@ -1,4 +1,7 @@
 .panel-of-experts/
 firebase-debug.log
 panelofexperts.debug.log
-panelofexperts
+/panelofexperts
+/poe
+poe.debug.log
+dist/

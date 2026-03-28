@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Publish draft release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate release manifest
+        run: go run ./cmd/release-manifest -dist dist -version "${GITHUB_REF_NAME}" -repo "${GITHUB_REPOSITORY}" -output dist/release-manifest.json
+
+      - name: Upload release manifest to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/release-manifest.json --clobber
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  smoke-unix:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install from local dist
+        run: |
+          chmod +x scripts/install.sh
+          POE_VERSION="${GITHUB_REF_NAME}" POE_BASE_URL="${PWD}/dist" ./scripts/install.sh
+
+      - name: Verify new shell resolves poe on Linux
+        if: runner.os == 'Linux'
+        run: bash -l -c 'command -v poe && poe version && poe doctor'
+
+      - name: Verify new shell resolves poe on macOS
+        if: runner.os == 'macOS'
+        run: zsh -l -c 'command -v poe && poe version && poe doctor'
+
+  smoke-windows:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install from local dist
+        shell: pwsh
+        run: ./scripts/install.ps1 -Version "${env:GITHUB_REF_NAME}" -BaseUrl "${PWD}\dist"
+
+      - name: Verify poe works
+        shell: pwsh
+        run: |
+          Get-Command poe
+          poe version
+          poe doctor
+
+  publish:
+    needs:
+      - smoke-unix
+      - smoke-windows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false
