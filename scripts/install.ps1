@@ -81,7 +81,7 @@ try {
     Copy-FromSource -Source "$ReleaseRoot/checksums.txt" -Destination $ChecksumsPath
 
     $expected = Select-String -Path $ChecksumsPath -Pattern ([regex]::Escape($AssetName)) | ForEach-Object {
-        ($_ -split '\s+')[0]
+        ($_.Line -split '\s+')[0]
     } | Select-Object -First 1
     if (-not $expected) {
         throw "Checksum for $AssetName not found."
