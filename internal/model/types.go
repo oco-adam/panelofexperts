@@ -244,6 +244,7 @@ type RunState struct {
 	CurrentPhase      string                 `json:"current_phase"`
 	Status            RunStatus              `json:"status"`
 	WaitingSummary    string                 `json:"waiting_summary"`
+	FailureSummary    string                 `json:"failure_summary,omitempty"`
 	StartedAt         time.Time              `json:"started_at"`
 	UpdatedAt         time.Time              `json:"updated_at"`
 	Manager           AgentConfig            `json:"manager"`

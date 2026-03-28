@@ -158,6 +158,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 	run.Status = model.RunStatusRunning
 	run.CurrentPhase = "manager_brief"
 	run.StopReason = model.StopReasonAwaitingUser
+	run.FailureSummary = ""
 	run.WaitingSummary = "Waiting on manager brief update"
 	e.touch(&run)
 	notify()
@@ -192,11 +193,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 	close(progressCh)
 	wg.Wait()
 	if runErr != nil {
-		run.Status = model.RunStatusFailed
-		run.CurrentPhase = "manager_brief_failed"
-		run.StopReason = model.StopReasonManagerFailed
-		run.WaitingSummary = ""
-		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateError, "brief_failed", summarizeError(runErr), e.now())
+		e.markRunFailed(&run, run.Manager.ID, "manager_brief_failed", model.StopReasonManagerFailed, "brief_failed", runErr)
 		e.touch(&run)
 		_ = store.SaveState(run)
 		notify()
@@ -205,11 +202,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 
 	brief, err := parseProviderOutput[model.Brief](run.Manager.Provider, result.Stdout)
 	if err != nil {
-		run.Status = model.RunStatusFailed
-		run.CurrentPhase = "manager_brief_failed"
-		run.StopReason = model.StopReasonManagerFailed
-		run.WaitingSummary = ""
-		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateError, "brief_failed", summarizeError(err), e.now())
+		e.markRunFailed(&run, run.Manager.ID, "manager_brief_failed", model.StopReasonManagerFailed, "brief_failed", err)
 		e.touch(&run)
 		_ = store.SaveState(run)
 		notify()
@@ -229,6 +222,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 	run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateDone, "brief_ready", "Manager updated the brief", e.now())
 	run.Status = model.RunStatusWaiting
 	run.CurrentPhase = "brief_ready"
+	run.FailureSummary = ""
 	run.WaitingSummary = "Waiting for the user to start the discussion"
 	e.appendTimeline(&run, 0, run.Manager.ID, "Manager updated the brief")
 	e.touch(&run)
@@ -274,6 +268,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 
 	run.Status = model.RunStatusRunning
 	run.CurrentPhase = "manager_initial_proposal"
+	run.FailureSummary = ""
 	run.WaitingSummary = "Waiting on manager initial proposal"
 	run.CurrentRound = 1
 	e.touch(&run)
@@ -281,10 +276,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 
 	proposal, version, err := e.runManagerProposal(ctx, managerProvider, &run, store, updateProgress, buildInitialProposalPrompt(run), 1)
 	if err != nil {
-		run.Status = model.RunStatusFailed
-		run.CurrentPhase = "manager_initial_proposal_failed"
-		run.StopReason = model.StopReasonManagerFailed
-		run.WaitingSummary = ""
+		e.markRunFailed(&run, run.Manager.ID, "manager_initial_proposal_failed", model.StopReasonManagerFailed, "initial_proposal_failed", err)
 		e.touch(&run)
 		_ = store.SaveState(run)
 		notify()
@@ -310,10 +302,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 
 		reviews, err := e.collectExpertReviews(ctx, &run, store, updateProgress, syncSnapshot, round, proposal)
 		if err != nil {
-			run.Status = model.RunStatusFailed
-			run.CurrentPhase = "expert_reviews_failed"
-			run.StopReason = model.StopReasonExpertsFailed
-			run.WaitingSummary = ""
+			e.markRunFailed(&run, "", "expert_reviews_failed", model.StopReasonExpertsFailed, "", err)
 			e.touch(&run)
 			_ = store.SaveState(run)
 			notify()
@@ -349,10 +338,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 				version+1,
 			)
 			if mergeErr != nil {
-				run.Status = model.RunStatusFailed
-				run.CurrentPhase = "manager_merge_failed"
-				run.StopReason = model.StopReasonManagerFailed
-				run.WaitingSummary = ""
+				e.markRunFailed(&run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
 				e.touch(&run)
 				_ = store.SaveState(run)
 				notify()
@@ -397,6 +383,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 
 finalize:
 	run.StopReason = stopReason
+	run.FailureSummary = ""
 	run.FinalProposal = &proposal
 	if run.Brief.TaskKind == model.TaskKindDocument {
 		run.CurrentPhase = "writing_deliverable"
@@ -406,10 +393,7 @@ finalize:
 		}
 		run.FinalMarkdown = render.RenderDeliverableMarkdown(run, proposal)
 		if err := writeDeliverableFile(run.DeliverablePath, run.FinalMarkdown); err != nil {
-			run.Status = model.RunStatusFailed
-			run.CurrentPhase = "deliverable_write_failed"
-			run.StopReason = model.StopReasonManagerFailed
-			run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateError, "deliverable_write_failed", summarizeError(err), e.now())
+			e.markRunFailed(&run, run.Manager.ID, "deliverable_write_failed", model.StopReasonManagerFailed, "deliverable_write_failed", err)
 			e.touch(&run)
 			_ = store.SaveState(run)
 			notify()
@@ -688,7 +672,15 @@ func deriveWaitingSummary(run model.RunState) string {
 	case model.RunStatusComplete:
 		return "Discussion complete"
 	case model.RunStatusFailed:
-		return ""
+		if strings.TrimSpace(run.FailureSummary) != "" {
+			return strings.TrimSpace(run.FailureSummary)
+		}
+		for _, status := range orderedAgentStatuses(run) {
+			if status.State == model.AgentStateError && strings.TrimSpace(status.Summary) != "" {
+				return strings.TrimSpace(status.Summary)
+			}
+		}
+		return "Run failed"
 	}
 
 	active := []string{}
@@ -757,6 +749,33 @@ func (e *Engine) appendTimeline(run *model.RunState, round int, agentID, text st
 func (e *Engine) touch(run *model.RunState) {
 	run.WaitingSummary = deriveWaitingSummary(*run)
 	run.UpdatedAt = e.now()
+}
+
+func (e *Engine) markRunFailed(
+	run *model.RunState,
+	agentID string,
+	phase string,
+	stopReason model.StopReason,
+	step string,
+	err error,
+) {
+	summary := summarizeError(err)
+	run.Status = model.RunStatusFailed
+	run.CurrentPhase = phase
+	run.StopReason = stopReason
+	run.FailureSummary = summary
+	run.WaitingSummary = summary
+	if agentID != "" {
+		status := run.AgentStatuses[agentID]
+		run.AgentStatuses[agentID] = updateAgentState(status, model.AgentStateError, step, summary, e.now())
+		name := status.Name
+		if strings.TrimSpace(name) == "" {
+			name = agentID
+		}
+		e.appendTimeline(run, run.CurrentRound, agentID, fmt.Sprintf("%s failed: %s", name, summary))
+	} else if summary != "" {
+		e.appendTimeline(run, run.CurrentRound, "", fmt.Sprintf("Run failed: %s", summary))
+	}
 }
 
 func parseProviderOutput[T any](provider model.ProviderID, raw string) (T, error) {

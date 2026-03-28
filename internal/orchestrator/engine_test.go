@@ -471,6 +471,114 @@ func TestRunExpertReviewRetriesWithoutWorkspaceAccess(t *testing.T) {
 	}
 }
 
+func TestRunDiscussionSurfacesManagerMergeFailureReason(t *testing.T) {
+	tempDir := t.TempDir()
+
+	handler := func(request model.Request) (string, error) {
+		switch request.OutputKind {
+		case "brief":
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Panel Test Project",
+				IntentSummary:  "Build the planning workflow.",
+				TaskKind:       model.TaskKindPlan,
+				TargetFilePath: "",
+				Goals:          []string{"Plan the app"},
+				Constraints:    []string{"Read-only"},
+				ReadyToStart:   true,
+				OpenQuestions:  []string{},
+				ManagerNotes:   "Ready for expert review.",
+			}), nil
+		case "review":
+			return mustMarshal(t, model.ExpertReview{
+				Lens:            request.Lens,
+				Summary:         "Needs one more manager pass.",
+				Strengths:       []string{"Clear structure"},
+				Concerns:        []string{"Needs one more change"},
+				Recommendations: []string{"Refine the plan"},
+				BlockingRisks:   []string{},
+				RequiresChanges: true,
+			}), nil
+		case "proposal":
+			if request.Version == 1 {
+				return mustMarshal(t, model.Proposal{
+					Title:               "Initial proposal",
+					Context:             "Initial context.",
+					Goals:               []string{"Plan the app"},
+					Constraints:         []string{"Read-only"},
+					RecommendedPlan:     []model.PlanItem{{Title: "Draft", Details: "Create the first proposal."}},
+					Risks:               []string{},
+					OpenQuestions:       []string{},
+					ConsensusNotes:      []string{},
+					DeliverablePath:     "",
+					DeliverableMarkdown: "",
+					Converged:           false,
+					ChangeSummary:       "Initial manager draft.",
+				}), nil
+			}
+			return "", errors.New("codex timed out after 5m0s")
+		default:
+			t.Fatalf("unexpected output kind %q", request.OutputKind)
+			return "", nil
+		}
+	}
+
+	engine := NewEngine(
+		fakeProvider{id: model.ProviderCodex, run: handler},
+	)
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderCodex},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+	run, err = engine.UpdateBrief(context.Background(), run, "Build the app", nil)
+	if err != nil {
+		t.Fatalf("update brief: %v", err)
+	}
+
+	run, err = engine.RunDiscussion(context.Background(), run, nil)
+	if err == nil {
+		t.Fatal("expected run discussion to fail on manager merge")
+	}
+	if run.Status != model.RunStatusFailed {
+		t.Fatalf("expected failed run status, got %s", run.Status)
+	}
+	if run.CurrentPhase != "manager_merge_failed" {
+		t.Fatalf("expected manager_merge_failed phase, got %s", run.CurrentPhase)
+	}
+	if run.FailureSummary != "codex timed out after 5m0s" {
+		t.Fatalf("expected failure summary to persist, got %q", run.FailureSummary)
+	}
+	if run.WaitingSummary != "codex timed out after 5m0s" {
+		t.Fatalf("expected waiting summary to surface failure reason, got %q", run.WaitingSummary)
+	}
+	managerStatus := run.AgentStatuses[run.Manager.ID]
+	if managerStatus.State != model.AgentStateError {
+		t.Fatalf("expected manager state error, got %s", managerStatus.State)
+	}
+	if managerStatus.LastStep != "merge_failed" {
+		t.Fatalf("expected manager failure step merge_failed, got %q", managerStatus.LastStep)
+	}
+	if managerStatus.Summary != "codex timed out after 5m0s" {
+		t.Fatalf("expected manager failure summary, got %q", managerStatus.Summary)
+	}
+	foundTimelineFailure := false
+	for _, entry := range run.Timeline {
+		if strings.Contains(entry.Text, "Manager (Codex CLI) failed: codex timed out after 5m0s") {
+			foundTimelineFailure = true
+			break
+		}
+	}
+	if !foundTimelineFailure {
+		t.Fatalf("expected timeline to include merge failure, got %+v", run.Timeline)
+	}
+}
+
 func TestParseProviderOutputSupportsWrappedProviderFormats(t *testing.T) {
 	type payload struct {
 		OK bool `json:"ok"`

@@ -640,23 +640,29 @@ func (m Model) viewMonitor() string {
 		" ",
 		m.metaBadge("Status", string(m.run.Status)),
 	)
+	failureSummary := m.currentFailureSummary()
 
 	lines := []string{
 		m.header(m.run.ProjectTitle, "Discussion Monitor"),
 		"",
 		meta,
 		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
+	}
+	if failureSummary != "" {
+		lines = append(lines, m.errorStyle.Render("Failure: "+failureSummary))
+	}
+	lines = append(lines,
 		"",
 		m.renderDivider("Live Activity"),
 		main,
 		"",
-	}
+	)
 	if m.run.FinalProposal != nil {
 		lines = append(lines, m.successStyle.Render("Discussion finished. Press r to view the final markdown."))
 	} else if m.inFlight {
 		lines = append(lines, fmt.Sprintf("%s Orchestration is running", m.spin.View()))
 	}
-	if m.err != "" {
+	if m.err != "" && m.err != failureSummary {
 		lines = append(lines, "", m.errorStyle.Render(m.err))
 	}
 	return strings.Join(lines, "\n")
@@ -676,6 +682,10 @@ func (m Model) viewResults() string {
 		meta,
 		m.renderLabeledLine("Final markdown", m.run.FinalMarkdownPath),
 	}
+	failureSummary := m.currentFailureSummary()
+	if failureSummary != "" {
+		lines = append(lines, m.errorStyle.Render("Failure: "+failureSummary))
+	}
 	if strings.TrimSpace(m.run.DeliverablePath) != "" {
 		lines = append(lines, m.renderLabeledLine("Deliverable file", m.run.DeliverablePath))
 	}
@@ -686,7 +696,7 @@ func (m Model) viewResults() string {
 		"",
 		m.mutedStyle.Render("Press m to return to the monitor, q to quit."),
 	)
-	if m.err != "" {
+	if m.err != "" && m.err != failureSummary {
 		lines = append(lines, "", m.errorStyle.Render(m.err))
 	}
 	return strings.Join(lines, "\n")
@@ -810,9 +820,11 @@ func (m *Model) syncMonitorViewportLayout() {
 		"",
 		meta,
 		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
-		"",
-		m.renderDivider("Live Activity"),
 	}, "\n")
+	if failureSummary := m.currentFailureSummary(); failureSummary != "" {
+		headerBlock += "\n" + m.errorStyle.Render("Failure: "+failureSummary)
+	}
+	headerBlock += "\n\n" + m.renderDivider("Live Activity")
 
 	footerParts := []string{}
 	if m.run.FinalProposal != nil {
@@ -820,7 +832,7 @@ func (m *Model) syncMonitorViewportLayout() {
 	} else if m.inFlight {
 		footerParts = append(footerParts, fmt.Sprintf("%s Orchestration is running", m.spin.View()))
 	}
-	if m.err != "" {
+	if m.err != "" && m.err != m.currentFailureSummary() {
 		footerParts = append(footerParts, "", m.errorStyle.Render(m.err))
 	}
 
@@ -836,6 +848,33 @@ func (m *Model) syncMonitorViewportLayout() {
 	m.statusViewport.SetContent(m.statusContent())
 	m.timelineView.SetContent(m.timelineContent())
 	m.timelineView.GotoBottom()
+}
+
+func (m Model) currentFailureSummary() string {
+	if strings.TrimSpace(m.err) != "" {
+		return strings.TrimSpace(m.err)
+	}
+	if strings.TrimSpace(m.run.FailureSummary) != "" {
+		return strings.TrimSpace(m.run.FailureSummary)
+	}
+	if m.run.Status != model.RunStatusFailed {
+		return ""
+	}
+	if strings.TrimSpace(m.run.WaitingSummary) != "" {
+		return strings.TrimSpace(m.run.WaitingSummary)
+	}
+	if status, ok := m.run.AgentStatuses[m.run.Manager.ID]; ok && status.State == model.AgentStateError && strings.TrimSpace(status.Summary) != "" {
+		return strings.TrimSpace(status.Summary)
+	}
+	for _, status := range orderedStatusesForView(m.run) {
+		if status.State == model.AgentStateError && strings.TrimSpace(status.Summary) != "" {
+			return strings.TrimSpace(status.Summary)
+		}
+	}
+	if m.run.StopReason != "" {
+		return string(m.run.StopReason)
+	}
+	return ""
 }
 
 func (m Model) activeBriefQuestion() (string, int, int) {
@@ -923,6 +962,19 @@ func (m Model) resultContent() string {
 		return render.RenderProposalMarkdown(*proposal, m.run)
 	}
 	return "No final proposal yet."
+}
+
+func orderedStatusesForView(run model.RunState) []model.AgentStatus {
+	statuses := make([]model.AgentStatus, 0, len(run.AgentStatuses))
+	if status, ok := run.AgentStatuses[run.Manager.ID]; ok {
+		statuses = append(statuses, status)
+	}
+	for _, expert := range run.Experts {
+		if status, ok := run.AgentStatuses[expert.ID]; ok {
+			statuses = append(statuses, status)
+		}
+	}
+	return statuses
 }
 
 func (m Model) header(title, subtitle string) string {

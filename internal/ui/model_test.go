@@ -366,6 +366,52 @@ func TestMonitorViewAutoScrollsTimelineAndFitsWindow(t *testing.T) {
 	}
 }
 
+func TestMonitorViewShowsFailureReasonNearTop(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
+	m = updated.(Model)
+
+	run := model.NewRunState(
+		"run-failed",
+		tempDir,
+		OutputRoot(tempDir),
+		5,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{},
+	)
+	run.ProjectTitle = "Panel UI"
+	run.Status = model.RunStatusFailed
+	run.CurrentPhase = "manager_merge_failed"
+	run.WaitingSummary = "codex timed out after 5m0s"
+	run.FailureSummary = "codex timed out after 5m0s"
+	run.AgentStatuses[run.Manager.ID] = model.AgentStatus{
+		AgentID:  run.Manager.ID,
+		Name:     run.Manager.Name,
+		Role:     run.Manager.Role,
+		Provider: run.Manager.Provider,
+		State:    model.AgentStateError,
+		LastStep: "merge_failed",
+		Summary:  "codex timed out after 5m0s",
+	}
+	m.screen = screenMonitor
+	m.run = run
+	m.refreshRunViews()
+
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "Waiting: codex timed out after 5m0s") {
+		t.Fatalf("expected waiting line to show failure reason, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Failure: codex timed out after 5m0s") {
+		t.Fatalf("expected failure banner near the top, got:\n%s", view)
+	}
+}
+
 func stripANSI(input string) string {
 	return ansiPattern.ReplaceAllString(input, "")
 }
