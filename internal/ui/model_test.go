@@ -412,6 +412,49 @@ func TestMonitorViewShowsFailureReasonNearTop(t *testing.T) {
 	}
 }
 
+func TestResultsViewFitsShortWindowAndShowsControls(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 26})
+	m = updated.(Model)
+
+	run := model.NewRunState(
+		"run-results",
+		tempDir,
+		OutputRoot(tempDir),
+		5,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{},
+	)
+	run.ProjectTitle = "Panel UI"
+	run.Status = model.RunStatusConverged
+	run.StopReason = model.StopReasonConverged
+	run.FinalProposal = &model.Proposal{Title: "Final proposal"}
+	run.FinalMarkdownPath = "/tmp/final.md"
+	run.DeliverablePath = "/tmp/DESIGN.md"
+	run.FinalMarkdown = strings.Repeat("Line of final markdown content that should require scrolling.\n", 40)
+
+	m.screen = screenResults
+	m.run = run
+	m.refreshRunViews()
+
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "Final proposal ready. Review the markdown below or use the saved file paths above.") {
+		t.Fatalf("expected results view to explain the next step, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Use up/down or j/k to scroll. Press m to return to the monitor, q to quit.") {
+		t.Fatalf("expected results view to show controls near the top, got:\n%s", view)
+	}
+	if height := lipgloss.Height(view); height > m.height {
+		t.Fatalf("expected results view height <= window height (%d), got %d\n%s", m.height, height, view)
+	}
+}
+
 func stripANSI(input string) string {
 	return ansiPattern.ReplaceAllString(input, "")
 }
