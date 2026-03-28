@@ -74,12 +74,20 @@ type Model struct {
 	resultViewport viewport.Model
 	spin           spinner.Model
 
-	headerStyle  lipgloss.Style
-	panelStyle   lipgloss.Style
-	focusStyle   lipgloss.Style
-	mutedStyle   lipgloss.Style
-	errorStyle   lipgloss.Style
-	successStyle lipgloss.Style
+	headerStyle         lipgloss.Style
+	headerTitleStyle    lipgloss.Style
+	headerSubtitleStyle lipgloss.Style
+	panelStyle          lipgloss.Style
+	panelTitleStyle     lipgloss.Style
+	focusStyle          lipgloss.Style
+	mutedStyle          lipgloss.Style
+	errorStyle          lipgloss.Style
+	successStyle        lipgloss.Style
+	warningStyle        lipgloss.Style
+	infoStyle           lipgloss.Style
+	labelStyle          lipgloss.Style
+	valueStyle          lipgloss.Style
+	dividerStyle        lipgloss.Style
 }
 
 func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
@@ -88,8 +96,17 @@ func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
 	input.Prompt = "> "
 	input.CharLimit = 0
 	input.SetWidth(80)
+	inputStyles := textinput.DefaultStyles(true)
+	inputStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
+	inputStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	inputStyles.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	inputStyles.Blurred.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("67"))
+	inputStyles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	inputStyles.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	input.SetStyles(inputStyles)
 
 	spin := spinner.New()
+	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
 
 	return Model{
 		engine: engine,
@@ -105,21 +122,50 @@ func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
 		input: input,
 		spin:  spin,
 		headerStyle: lipgloss.NewStyle().
+			Padding(0, 1),
+		headerTitleStyle: lipgloss.NewStyle().
 			Bold(true).
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("31")).
+			Padding(0, 1),
+		headerSubtitleStyle: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("81")).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("67")).
 			Padding(0, 1),
 		panelStyle: lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("67")).
 			Padding(0, 1),
 		focusStyle: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("10")),
+			Foreground(lipgloss.Color("81")),
+		panelTitleStyle: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("16")).
+			Background(lipgloss.Color("81")).
+			Padding(0, 1),
 		mutedStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")),
+			Foreground(lipgloss.Color("244")),
+		infoStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("81")).
+			Bold(true),
+		labelStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("110")).
+			Bold(true),
+		valueStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("252")),
+		dividerStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("67")),
 		errorStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("9")).
+			Foreground(lipgloss.Color("203")).
 			Bold(true),
 		successStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("10")).
+			Foreground(lipgloss.Color("42")).
+			Bold(true),
+		warningStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
 			Bold(true),
 	}
 }
@@ -254,6 +300,7 @@ func (m *Model) resize() {
 	m.statusViewport = viewport.New(viewport.WithWidth(max(30, panelWidth/2-1)), viewport.WithHeight(contentHeight))
 	m.timelineView = viewport.New(viewport.WithWidth(max(30, panelWidth/2-1)), viewport.WithHeight(contentHeight))
 	m.resultViewport = viewport.New(viewport.WithWidth(panelWidth), viewport.WithHeight(contentHeight))
+	m.input.SetWidth(max(24, panelWidth-8))
 	m.refreshRunViews()
 }
 
@@ -430,9 +477,7 @@ func (m *Model) refreshRunViews() {
 }
 
 func (m Model) viewSetup() string {
-	lines := []string{
-		m.header("Panel of Experts", "Setup"),
-		"",
+	configLines := []string{
 		m.renderSetupField(0, "Manager", model.ProviderDisplayName(m.setup.Manager)),
 		m.renderSetupField(1, "Expert 1", model.ProviderDisplayName(m.setup.Experts[0])),
 		m.renderSetupField(2, "Expert 2", model.ProviderDisplayName(m.setup.Experts[1])),
@@ -440,11 +485,10 @@ func (m Model) viewSetup() string {
 		m.renderSetupField(4, "Expert count", fmt.Sprintf("%d", m.setup.ExpertCount)),
 		m.renderSetupField(5, "Max rounds", fmt.Sprintf("%d", m.setup.MaxRounds)),
 		"",
-		fmt.Sprintf("Workspace: %s", m.setup.CWD),
-		fmt.Sprintf("Output root: %s", m.setup.OutputRoot),
-		"",
-		"Provider status:",
+		m.renderLabeledLine("Workspace", m.setup.CWD),
+		m.renderLabeledLine("Output root", m.setup.OutputRoot),
 	}
+	providerLines := []string{}
 	for _, id := range model.AllProviders() {
 		capability := m.capabilities[id]
 		status := "missing"
@@ -454,9 +498,27 @@ func (m Model) viewSetup() string {
 				status = "ready"
 			}
 		}
-		lines = append(lines, fmt.Sprintf("- %s: %s (%s)", model.ProviderDisplayName(id), capability.Summary, status))
+		providerLines = append(providerLines,
+			lipgloss.JoinHorizontal(lipgloss.Center,
+				m.providerBadge(id),
+				" ",
+				m.statusBadge(status),
+			),
+			"  "+emptyFallback(capability.Summary, "No provider summary available"),
+			"",
+		)
 	}
-	lines = append(lines, "", m.mutedStyle.Render("Use tab/j/k to move, h/l to change values, enter to create the run."))
+	lines := []string{
+		m.header("Panel of Experts", "Setup"),
+		"",
+		m.renderDivider("Run Configuration"),
+		m.renderPanel("Panel Setup", strings.Join(configLines, "\n"), m.width-4, "81"),
+		"",
+		m.renderDivider("Providers"),
+		m.renderPanel("Provider Status", strings.TrimSpace(strings.Join(providerLines, "\n")), m.width-4, "214"),
+		"",
+		m.mutedStyle.Render("Use tab/j/k to move, h/l to change values, enter to create the run."),
+	}
 	if m.err != "" {
 		lines = append(lines, "", m.errorStyle.Render(m.err))
 	}
@@ -464,34 +526,40 @@ func (m Model) viewSetup() string {
 }
 
 func (m Model) viewBrief() string {
+	meta := lipgloss.JoinHorizontal(lipgloss.Center,
+		m.metaBadge("Run", m.run.ID),
+		" ",
+		m.metaBadge("Status", string(m.run.Status)),
+	)
 	body := []string{
 		m.header(m.run.ProjectTitle, "Manager Brief"),
 		"",
-		fmt.Sprintf("Run: %s", m.run.ID),
-		fmt.Sprintf("Status: %s", m.run.Status),
-		fmt.Sprintf("Waiting: %s", m.run.WaitingSummary),
+		meta,
+		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
 		"",
-		m.panelStyle.Width(m.width - 4).Render(m.briefViewport.View()),
+		m.renderDivider("Brief Snapshot"),
+		m.renderPanel("Brief Snapshot", m.briefViewport.View(), m.width-4, "81"),
 		"",
 	}
 	if question, index, total := m.activeBriefQuestion(); question != "" {
 		body = append(body,
-			m.panelStyle.Width(m.width-4).Render(strings.Join([]string{
+			m.renderDivider("Current Question"),
+			m.renderPanel("Manager Question", strings.Join([]string{
 				fmt.Sprintf("Manager Question %d of %d", index+1, total),
 				"",
 				question,
-			}, "\n")),
+			}, "\n"), m.width-4, "214"),
 			"",
 		)
 	}
 	if m.inFlight {
-		body = append(body, fmt.Sprintf("%s Manager is updating the brief", m.spin.View()))
+		body = append(body, fmt.Sprintf("%s %s", m.spin.View(), m.infoStyle.Render("Manager is updating the brief")))
 	} else if question, index, total := m.activeBriefQuestion(); question != "" {
 		body = append(body, m.mutedStyle.Render(fmt.Sprintf("Enter submits your answer to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)))
 	} else {
 		body = append(body, m.mutedStyle.Render("Enter sends the next message to the manager. Press ctrl+s to start the discussion."))
 	}
-	body = append(body, m.input.View())
+	body = append(body, m.renderPanel("Reply", m.input.View(), m.width-4, "67"))
 	if m.err != "" {
 		body = append(body, "", m.errorStyle.Render(m.err))
 	}
@@ -499,19 +567,26 @@ func (m Model) viewBrief() string {
 }
 
 func (m Model) viewMonitor() string {
-	left := m.panelStyle.Width(max(30, m.width/2-3)).Render(m.statusViewport.View())
-	right := m.panelStyle.Width(max(30, m.width/2-3)).Render(m.timelineView.View())
+	left := m.renderPanel("Agent Status", m.statusViewport.View(), max(30, m.width/2-3), "81")
+	right := m.renderPanel("Timeline", m.timelineView.View(), max(30, m.width/2-3), "214")
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
+	meta := lipgloss.JoinHorizontal(lipgloss.Center,
+		m.metaBadge("Run", m.run.ID),
+		" ",
+		m.metaBadge("Phase", m.run.CurrentPhase),
+		" ",
+		m.metaBadge("Round", m.run.DisplayRound()),
+		" ",
+		m.metaBadge("Status", string(m.run.Status)),
+	)
 
 	lines := []string{
 		m.header(m.run.ProjectTitle, "Discussion Monitor"),
 		"",
-		fmt.Sprintf("Run: %s", m.run.ID),
-		fmt.Sprintf("Phase: %s", m.run.CurrentPhase),
-		fmt.Sprintf("Iteration: %s", m.run.DisplayRound()),
-		fmt.Sprintf("Status: %s", m.run.Status),
-		fmt.Sprintf("Waiting: %s", m.run.WaitingSummary),
+		meta,
+		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
 		"",
+		m.renderDivider("Live Activity"),
 		main,
 		"",
 	}
@@ -527,19 +602,26 @@ func (m Model) viewMonitor() string {
 }
 
 func (m Model) viewResults() string {
+	meta := lipgloss.JoinHorizontal(lipgloss.Center,
+		m.metaBadge("Run", m.run.ID),
+		" ",
+		m.metaBadge("Stop", string(m.run.StopReason)),
+		" ",
+		m.metaBadge("Status", string(m.run.Status)),
+	)
 	lines := []string{
 		m.header(m.run.ProjectTitle, "Final Proposal"),
 		"",
-		fmt.Sprintf("Run: %s", m.run.ID),
-		fmt.Sprintf("Stop reason: %s", m.run.StopReason),
-		fmt.Sprintf("Final markdown: %s", m.run.FinalMarkdownPath),
+		meta,
+		m.renderLabeledLine("Final markdown", m.run.FinalMarkdownPath),
 	}
 	if strings.TrimSpace(m.run.DeliverablePath) != "" {
-		lines = append(lines, fmt.Sprintf("Deliverable file: %s", m.run.DeliverablePath))
+		lines = append(lines, m.renderLabeledLine("Deliverable file", m.run.DeliverablePath))
 	}
 	lines = append(lines,
 		"",
-		m.panelStyle.Width(m.width-4).Render(m.resultViewport.View()),
+		m.renderDivider("Final Markdown"),
+		m.renderPanel("Final Markdown", m.resultViewport.View(), m.width-4, "42"),
 		"",
 		m.mutedStyle.Render("Press m to return to the monitor, q to quit."),
 	)
@@ -550,7 +632,8 @@ func (m Model) viewResults() string {
 }
 
 func (m Model) renderSetupField(index int, label, value string) string {
-	line := fmt.Sprintf("%-12s %s", label+":", value)
+	label = fmt.Sprintf("%-12s", label+":")
+	line := lipgloss.JoinHorizontal(lipgloss.Center, m.labelStyle.Render(label), " ", m.valueStyle.Render(value))
 	if m.setup.Focus == index {
 		return m.focusStyle.Render("> " + line)
 	}
@@ -621,33 +704,48 @@ func (m Model) statusContent() string {
 	if m.run.ID == "" {
 		return ""
 	}
-	lines := []string{
-		"Agent Status",
-		"",
-	}
-	for _, agent := range m.run.AllAgents() {
+	lines := []string{}
+	for i, agent := range m.run.AllAgents() {
 		status := m.run.AgentStatuses[agent.ID]
 		lines = append(lines,
-			fmt.Sprintf("%s", agent.Name),
-			fmt.Sprintf("  Provider: %s", model.ProviderDisplayName(agent.Provider)),
-			fmt.Sprintf("  State: %s", status.State),
-			fmt.Sprintf("  Step: %s", status.LastStep),
-			fmt.Sprintf("  Summary: %s", emptyFallback(status.Summary, "No updates yet")),
+			lipgloss.JoinHorizontal(lipgloss.Center,
+				m.valueStyle.Bold(true).Render(agent.Name),
+				" ",
+				m.providerBadge(agent.Provider),
+				" ",
+				m.stateBadge(status.State),
+			),
+			"  "+m.renderLabeledLine("Step", emptyFallback(status.LastStep, "No step yet")),
+			"  "+m.renderLabeledLine("Summary", emptyFallback(status.Summary, "No updates yet")),
+		)
+		lines = append(lines,
 			"",
 		)
+		if i < len(m.run.AllAgents())-1 {
+			lines = append(lines, m.dividerStyle.Render(strings.Repeat("─", max(12, m.statusViewport.Width()-6))), "")
+		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func (m Model) timelineContent() string {
 	if m.run.ID == "" {
 		return ""
 	}
-	lines := []string{"Timeline", ""}
-	for _, entry := range m.run.Timeline {
-		lines = append(lines, fmt.Sprintf("[%s] %s", entry.Timestamp.Format(timeFormat), entry.Text))
+	lines := []string{}
+	for i, entry := range m.run.Timeline {
+		lines = append(lines,
+			lipgloss.JoinHorizontal(lipgloss.Top,
+				m.mutedStyle.Render(entry.Timestamp.Format(timeFormat)),
+				"  ",
+				m.valueStyle.Render(entry.Text),
+			),
+		)
+		if i < len(m.run.Timeline)-1 {
+			lines = append(lines, m.dividerStyle.Render(strings.Repeat("─", max(12, m.timelineView.Width()-6))))
+		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func (m Model) resultContent() string {
@@ -661,11 +759,83 @@ func (m Model) resultContent() string {
 }
 
 func (m Model) header(title, subtitle string) string {
-	status := subtitle
-	if m.inFlight {
-		status += "  " + m.spin.View()
+	parts := []string{
+		m.headerTitleStyle.Render(title),
+		m.headerSubtitleStyle.Render(subtitle),
 	}
-	return m.headerStyle.Render(fmt.Sprintf("%s | %s", title, status))
+	if m.inFlight {
+		parts = append(parts, m.infoStyle.Render(m.spin.View()))
+	}
+	return m.headerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, parts...))
+}
+
+func (m Model) renderPanel(title, content string, width int, borderColor string) string {
+	color := lipgloss.Color(borderColor)
+	titleBlock := m.panelTitleStyle.Background(color).Render(title)
+	dividerWidth := max(8, width-lipgloss.Width(title)-6)
+	divider := m.dividerStyle.Foreground(color).Render(strings.Repeat("─", dividerWidth))
+	body := lipgloss.JoinVertical(lipgloss.Left, lipgloss.JoinHorizontal(lipgloss.Center, titleBlock, " ", divider), content)
+	return m.panelStyle.BorderForeground(color).Width(width).Render(body)
+}
+
+func (m Model) renderDivider(label string) string {
+	labelBlock := m.infoStyle.Render(strings.ToUpper(strings.TrimSpace(label)))
+	lineWidth := max(8, m.width-lipgloss.Width(labelBlock)-8)
+	return lipgloss.JoinHorizontal(lipgloss.Center, labelBlock, " ", m.dividerStyle.Render(strings.Repeat("─", lineWidth)))
+}
+
+func (m Model) renderLabeledLine(label, value string) string {
+	return lipgloss.JoinHorizontal(lipgloss.Center, m.labelStyle.Render(label+":"), " ", m.valueStyle.Render(value))
+}
+
+func (m Model) metaBadge(label, value string) string {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("252")).
+		Background(lipgloss.Color("60")).
+		Padding(0, 1).
+		Render(fmt.Sprintf("%s %s", strings.ToUpper(label), value))
+}
+
+func (m Model) providerBadge(provider model.ProviderID) string {
+	color := lipgloss.Color("81")
+	switch provider {
+	case model.ProviderClaude:
+		color = lipgloss.Color("214")
+	case model.ProviderGemini:
+		color = lipgloss.Color("42")
+	}
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("16")).
+		Background(color).
+		Bold(true).
+		Padding(0, 1).
+		Render(model.ProviderDisplayName(provider))
+}
+
+func (m Model) statusBadge(status string) string {
+	color := lipgloss.Color("240")
+	switch status {
+	case "ready", string(model.RunStatusComplete), string(model.RunStatusConverged), string(model.AgentStateDone):
+		color = lipgloss.Color("42")
+	case "available", string(model.RunStatusWaiting), string(model.AgentStateWaitingOnExperts), string(model.AgentStateWaitingOnManager):
+		color = lipgloss.Color("81")
+	case string(model.RunStatusRunning), string(model.AgentStateStarting), string(model.AgentStateQueued), string(model.AgentStateParsing):
+		color = lipgloss.Color("214")
+	case "missing", string(model.RunStatusFailed), string(model.AgentStateError):
+		color = lipgloss.Color("203")
+	case string(model.AgentStateSkipped):
+		color = lipgloss.Color("244")
+	}
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("16")).
+		Background(color).
+		Bold(true).
+		Padding(0, 1).
+		Render(strings.ToUpper(status))
+}
+
+func (m Model) stateBadge(state model.AgentState) string {
+	return m.statusBadge(string(state))
 }
 
 func emptyFallback(value, fallback string) string {
