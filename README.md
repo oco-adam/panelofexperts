@@ -58,6 +58,8 @@ Fastest install:
 curl -fsSL https://raw.githubusercontent.com/oco-adam/panelofexperts/main/scripts/install.sh | sh
 ```
 
+Quick install requires at least one published GitHub release. If the installer says no published release exists yet, use the source-build path below until the first release is cut.
+
 What this does:
 
 - Downloads the latest macOS release for your CPU architecture.
@@ -88,6 +90,8 @@ Fastest install:
 curl -fsSL https://raw.githubusercontent.com/oco-adam/panelofexperts/main/scripts/install.sh | sh
 ```
 
+Quick install requires at least one published GitHub release. If the installer says no published release exists yet, use the source-build path below until the first release is cut.
+
 Then verify:
 
 ```sh
@@ -111,6 +115,8 @@ Open PowerShell and run:
 irm https://raw.githubusercontent.com/oco-adam/panelofexperts/main/scripts/install.ps1 | iex
 ```
 
+Quick install requires at least one published GitHub release. If the installer says no published release exists yet, use the source-build path below until the first release is cut.
+
 Then verify:
 
 ```powershell
@@ -129,7 +135,7 @@ Manual install:
 
 ### Build From Source
 
-If you want a local development build instead of a release binary:
+If you want a local development build instead of a release binary, or you are running from `main` before the first published release exists:
 
 1. Install Go `1.25.1` or newer.
 2. Clone this repository.

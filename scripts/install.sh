@@ -50,9 +50,31 @@ resolve_arch() {
 
 latest_version() {
   require_cmd curl
-  curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-    head -n 1
+  api_url="https://api.github.com/repos/$REPO/releases/latest"
+  response_path="$(mktemp)"
+  status="$(curl -sSL -o "$response_path" -w '%{http_code}' "$api_url" 2>/dev/null || true)"
+  case "$status" in
+    200)
+      version="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$response_path" | head -n 1)"
+      rm -f "$response_path"
+      [ -n "$version" ] || {
+        echo "GitHub returned a latest release for $REPO, but no tag_name was present." >&2
+        return 1
+      }
+      printf '%s\n' "$version"
+      ;;
+    404)
+      rm -f "$response_path"
+      echo "No published GitHub release found for $REPO. Quick install works only after a release is published." >&2
+      echo "Build from source instead, or rerun with POE_VERSION and POE_BASE_URL pointed at release artifacts." >&2
+      return 1
+      ;;
+    *)
+      rm -f "$response_path"
+      echo "Failed to resolve the latest GitHub release for $REPO (HTTP ${status:-000})." >&2
+      return 1
+      ;;
+  esac
 }
 
 resolve_profile() {
@@ -141,7 +163,7 @@ verify_checksum() {
 OS="$(resolve_os)"
 ARCH="$(resolve_arch)"
 if [ -z "$VERSION" ]; then
-  VERSION="$(latest_version)"
+  VERSION="$(latest_version)" || exit 1
 fi
 [ -n "$VERSION" ] || {
   echo "Unable to resolve a release version. Set POE_VERSION explicitly." >&2

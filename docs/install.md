@@ -16,6 +16,8 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/oco-adam/panelofexperts/main/scripts/install.ps1 | iex
 ```
 
+Quick install requires at least one published GitHub release. If the installer says no published release exists yet, clone the repo and use the source-build flow from the README until the first release is published.
+
 The installers:
 
 - install `poe` onto your user PATH

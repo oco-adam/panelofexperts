@@ -14,7 +14,27 @@ function Resolve-Version {
     if ($Version) {
         return $Version
     }
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest"
+
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest"
+    }
+    catch {
+        $statusCode = 0
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+
+        if ($statusCode -eq 404) {
+            throw "No published GitHub release found for $Repository. Quick install works only after a release is published. Build from source instead, or rerun with -Version and -BaseUrl pointed at release artifacts."
+        }
+
+        throw "Failed to resolve the latest GitHub release for $Repository (HTTP $statusCode)."
+    }
+
+    if (-not $release.tag_name) {
+        throw "GitHub returned a latest release for $Repository, but no tag_name was present."
+    }
+
     return [string]$release.tag_name
 }
 
