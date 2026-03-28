@@ -82,7 +82,10 @@ jobs:
 
       - name: Install from local dist
         shell: pwsh
-        run: ./scripts/install.ps1 -Version "${env:GITHUB_REF_NAME}" -BaseUrl "${PWD}\dist"
+        run: |
+          $InstallDir = Join-Path $env:RUNNER_TEMP "poe\bin"
+          ./scripts/install.ps1 -Version "${env:GITHUB_REF_NAME}" -BaseUrl "${PWD}\dist" -InstallDir $InstallDir -NoPathUpdate
+          $InstallDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Verify poe works
         shell: pwsh
