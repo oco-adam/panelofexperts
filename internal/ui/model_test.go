@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -301,6 +302,67 @@ func TestBriefViewFitsShortWindowAndKeepsReplyVisible(t *testing.T) {
 	}
 	if height := lipgloss.Height(view); height > m.height {
 		t.Fatalf("expected brief view height <= window height (%d), got %d\n%s", m.height, height, view)
+	}
+}
+
+func TestMonitorViewAutoScrollsTimelineAndFitsWindow(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
+	m = updated.(Model)
+
+	run := model.NewRunState(
+		"run-monitor",
+		tempDir,
+		OutputRoot(tempDir),
+		5,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{
+			{ID: "expert-1", Name: "Expert 1 (Codex CLI)", Role: model.RoleExpert, Provider: model.ProviderCodex},
+			{ID: "expert-2", Name: "Expert 2 (Claude CLI)", Role: model.RoleExpert, Provider: model.ProviderClaude},
+			{ID: "expert-3", Name: "Expert 3 (Gemini CLI)", Role: model.RoleExpert, Provider: model.ProviderGemini},
+		},
+	)
+	run.ProjectTitle = "Panel UI"
+	run.Status = model.RunStatusRunning
+	run.CurrentPhase = "expert_reviews"
+	run.CurrentRound = 1
+	run.WaitingSummary = "Waiting on Expert 2 (Claude CLI)"
+	for i := 1; i <= 24; i++ {
+		run.Timeline = append(run.Timeline, model.TimelineEntry{
+			Timestamp: time.Now().UTC().Add(time.Duration(i) * time.Second),
+			Text:      fmt.Sprintf("timeline event %02d", i),
+		})
+	}
+
+	m.screen = screenMonitor
+	m.run = run
+	m.inFlight = true
+	m.refreshRunViews()
+
+	if !strings.Contains(stripANSI(m.timelineView.View()), "timeline event 24") {
+		t.Fatalf("expected timeline viewport to show the latest event, got:\n%s", stripANSI(m.timelineView.View()))
+	}
+
+	m.run.Timeline = append(m.run.Timeline, model.TimelineEntry{
+		Timestamp: time.Now().UTC().Add(25 * time.Second),
+		Text:      "timeline event 25",
+	})
+	m.refreshRunViews()
+
+	timelineView := stripANSI(m.timelineView.View())
+	if !strings.Contains(timelineView, "timeline event 25") {
+		t.Fatalf("expected timeline viewport to auto-scroll to the newest event, got:\n%s", timelineView)
+	}
+
+	view := stripANSI(m.View().Content)
+	if height := lipgloss.Height(view); height > m.height {
+		t.Fatalf("expected monitor view height <= window height (%d), got %d\n%s", m.height, height, view)
 	}
 }
 

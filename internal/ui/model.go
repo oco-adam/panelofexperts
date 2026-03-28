@@ -522,12 +522,7 @@ func (m *Model) updateResults(msg tea.KeyMsg) tea.Cmd {
 
 func (m *Model) refreshRunViews() {
 	m.syncBriefViewportLayout()
-	if m.statusViewport.Width() > 0 {
-		m.statusViewport.SetContent(m.statusContent())
-	}
-	if m.timelineView.Width() > 0 {
-		m.timelineView.SetContent(m.timelineContent())
-	}
+	m.syncMonitorViewportLayout()
 	if m.resultViewport.Width() > 0 {
 		m.resultViewport.SetContent(m.resultContent())
 	}
@@ -794,6 +789,53 @@ func (m *Model) syncBriefViewportLayout() {
 	}
 	m.briefViewport.SetHeight(available)
 	m.briefViewport.SetContent(m.briefContent())
+}
+
+func (m *Model) syncMonitorViewportLayout() {
+	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.statusViewport.Width() == 0 || m.timelineView.Width() == 0 {
+		return
+	}
+
+	meta := lipgloss.JoinHorizontal(lipgloss.Center,
+		m.metaBadge("Run", m.run.ID),
+		" ",
+		m.metaBadge("Phase", m.run.CurrentPhase),
+		" ",
+		m.metaBadge("Round", m.run.DisplayRound()),
+		" ",
+		m.metaBadge("Status", string(m.run.Status)),
+	)
+	headerBlock := strings.Join([]string{
+		m.header(m.run.ProjectTitle, "Discussion Monitor"),
+		"",
+		meta,
+		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
+		"",
+		m.renderDivider("Live Activity"),
+	}, "\n")
+
+	footerParts := []string{}
+	if m.run.FinalProposal != nil {
+		footerParts = append(footerParts, m.successStyle.Render("Discussion finished. Press r to view the final markdown."))
+	} else if m.inFlight {
+		footerParts = append(footerParts, fmt.Sprintf("%s Orchestration is running", m.spin.View()))
+	}
+	if m.err != "" {
+		footerParts = append(footerParts, "", m.errorStyle.Render(m.err))
+	}
+
+	panelWidth := max(30, m.width/2-3)
+	panelChrome := lipgloss.Height(m.renderPanel("Agent Status", "", panelWidth, "81"))
+	available := m.height - lipgloss.Height(headerBlock) - lipgloss.Height(strings.Join(footerParts, "\n")) - panelChrome - 4
+	if available < 3 {
+		available = 3
+	}
+
+	m.statusViewport.SetHeight(available)
+	m.timelineView.SetHeight(available)
+	m.statusViewport.SetContent(m.statusContent())
+	m.timelineView.SetContent(m.timelineContent())
+	m.timelineView.GotoBottom()
 }
 
 func (m Model) activeBriefQuestion() (string, int, int) {
