@@ -177,7 +177,8 @@ else
 fi
 
 archive_extension="tar.gz"
-asset_name="poe_${VERSION}_${OS}_${ARCH}.${archive_extension}"
+ASSET_VERSION="${VERSION#v}"
+asset_name="poe_${ASSET_VERSION}_${OS}_${ARCH}.${archive_extension}"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT INT TERM

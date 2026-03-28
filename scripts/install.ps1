@@ -67,7 +67,8 @@ if (-not $Version) {
 }
 
 $Arch = Resolve-Arch
-$AssetName = "poe_${Version}_windows_${Arch}.zip"
+$AssetVersion = if ($Version.StartsWith("v")) { $Version.Substring(1) } else { $Version }
+$AssetName = "poe_${AssetVersion}_windows_${Arch}.zip"
 $ReleaseRoot = if ($BaseUrl) { $BaseUrl } else { "https://github.com/$Repository/releases/download/$Version" }
 
 $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("poe-install-" + [System.Guid]::NewGuid().ToString("N"))
