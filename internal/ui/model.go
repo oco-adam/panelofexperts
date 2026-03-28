@@ -84,7 +84,6 @@ type Model struct {
 
 func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
 	input := textinput.New()
-	input.Placeholder = "Tell the manager what you want to accomplish"
 	input.Focus()
 	input.Prompt = "> "
 	input.CharLimit = 0
@@ -150,8 +149,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.capabilities = msg.Capabilities
 		m.screen = screenSetup
 		m.initSetupDefaults()
+		m.syncBriefInput()
 	case snapshotMsg:
 		m.run = msg.Run
+		m.syncBriefInput()
 		m.refreshRunViews()
 		if m.run.Status == model.RunStatusRunning && m.screen != screenResults {
 			m.screen = screenMonitor
@@ -163,6 +164,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = ""
 			m.run = msg.Run
+			m.syncBriefInput()
 			m.refreshRunViews()
 			m.screen = screenBrief
 		}
@@ -307,6 +309,7 @@ func (m *Model) updateSetup(msg tea.KeyMsg) tea.Cmd {
 		}
 		m.err = ""
 		m.run = run
+		m.syncBriefInput()
 		m.refreshRunViews()
 		m.screen = screenBrief
 	}
@@ -361,7 +364,7 @@ func (m *Model) updateBrief(msg tea.KeyMsg) tea.Cmd {
 		if m.inFlight || strings.TrimSpace(m.input.Value()) == "" {
 			return nil
 		}
-		message := strings.TrimSpace(m.input.Value())
+		message := m.briefSubmissionText(strings.TrimSpace(m.input.Value()))
 		m.input.SetValue("")
 		m.err = ""
 		m.inFlight = true
@@ -471,8 +474,20 @@ func (m Model) viewBrief() string {
 		m.panelStyle.Width(m.width - 4).Render(m.briefViewport.View()),
 		"",
 	}
+	if question, index, total := m.activeBriefQuestion(); question != "" {
+		body = append(body,
+			m.panelStyle.Width(m.width-4).Render(strings.Join([]string{
+				fmt.Sprintf("Manager Question %d of %d", index+1, total),
+				"",
+				question,
+			}, "\n")),
+			"",
+		)
+	}
 	if m.inFlight {
 		body = append(body, fmt.Sprintf("%s Manager is updating the brief", m.spin.View()))
+	} else if question, index, total := m.activeBriefQuestion(); question != "" {
+		body = append(body, m.mutedStyle.Render(fmt.Sprintf("Enter submits your answer to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)))
 	} else {
 		body = append(body, m.mutedStyle.Render("Enter sends the next message to the manager. Press ctrl+s to start the discussion."))
 	}
@@ -561,6 +576,45 @@ func (m Model) briefContent() string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func (m *Model) syncBriefInput() {
+	if question, _, _ := m.activeBriefQuestion(); question != "" {
+		m.input.Placeholder = "Answer the current manager question"
+		m.input.Prompt = "A> "
+		return
+	}
+	m.input.Placeholder = "Tell the manager what you want to accomplish"
+	m.input.Prompt = "> "
+}
+
+func (m Model) activeBriefQuestion() (string, int, int) {
+	for i, question := range m.run.Brief.OpenQuestions {
+		question = strings.TrimSpace(question)
+		if question != "" {
+			return question, i, len(m.run.Brief.OpenQuestions)
+		}
+	}
+	return "", 0, 0
+}
+
+func (m Model) briefSubmissionText(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	question, _, _ := m.activeBriefQuestion()
+	if question == "" {
+		return input
+	}
+	return strings.TrimSpace(fmt.Sprintf(`
+The user answered one manager follow-up question for the planning brief.
+
+Question: %s
+Answer: %s
+
+Update the brief. Remove resolved open questions, keep unresolved questions, and adjust ready_to_start if appropriate.
+`, question, input))
 }
 
 func (m Model) statusContent() string {

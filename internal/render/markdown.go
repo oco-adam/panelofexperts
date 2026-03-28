@@ -27,7 +27,7 @@ func RenderBriefMarkdown(brief model.Brief) string {
 	}
 	writeListSection(&b, "Goals", brief.Goals)
 	writeListSection(&b, "Constraints", brief.Constraints)
-	writeListSection(&b, "Open Questions", brief.OpenQuestions)
+	writeListSection(&b, "Manager Questions", brief.OpenQuestions)
 	writeSection(&b, "Manager Notes", brief.ManagerNotes)
 	fmt.Fprintf(&b, "Ready to start: **%t**\n", brief.ReadyToStart)
 	return strings.TrimSpace(b.String()) + "\n"

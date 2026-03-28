@@ -138,3 +138,54 @@ func TestTypingLetterSDoesNotStartDiscussion(t *testing.T) {
 		t.Fatal("expected typing s to not start the discussion")
 	}
 }
+
+func TestBriefQuestionFlowUsesStructuredAnswerPrompt(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	m.screen = screenBrief
+	m.run = model.NewRunState(
+		"run-123",
+		tempDir,
+		OutputRoot(tempDir),
+		10,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{},
+	)
+	m.run.Brief.OpenQuestions = []string{
+		"Should DESIGN.md describe the current UI or the target-state UI?",
+		"Who is the intended audience?",
+	}
+	m.syncBriefInput()
+	m.refreshRunViews()
+
+	view := m.View().Content
+	if !strings.Contains(view, "Manager Question 1 of 2") {
+		t.Fatalf("expected brief view to show the current manager question, got:\n%s", view)
+	}
+	if m.input.Placeholder != "Answer the current manager question" {
+		t.Fatalf("expected question-specific placeholder, got %q", m.input.Placeholder)
+	}
+	if m.input.Prompt != "A> " {
+		t.Fatalf("expected answer prompt, got %q", m.input.Prompt)
+	}
+
+	submission := m.briefSubmissionText("Target-state first, with implementation drift called out explicitly.")
+	for _, expected := range []string{
+		"The user answered one manager follow-up question",
+		"Question: Should DESIGN.md describe the current UI or the target-state UI?",
+		"Answer: Target-state first, with implementation drift called out explicitly.",
+		"Update the brief.",
+	} {
+		if !strings.Contains(submission, expected) {
+			t.Fatalf("expected structured submission to contain %q, got:\n%s", expected, submission)
+		}
+	}
+}
