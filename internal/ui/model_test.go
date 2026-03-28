@@ -53,6 +53,9 @@ func TestModelScreenTransitionsAndStatusContent(t *testing.T) {
 	if m.screen != screenSetup {
 		t.Fatalf("expected setup screen, got %v", m.screen)
 	}
+	if m.setup.Manager != model.ProviderCodex {
+		t.Fatalf("expected Codex to be the preferred default manager, got %q", m.setup.Manager)
+	}
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
@@ -97,5 +100,40 @@ func TestModelScreenTransitionsAndStatusContent(t *testing.T) {
 	}
 	if !strings.Contains(m.View().Content, "# Final proposal") {
 		t.Fatalf("expected final markdown to render in results view, got:\n%s", m.View().Content)
+	}
+}
+
+func TestTypingLetterSDoesNotStartDiscussion(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	updated, _ = m.Update(capabilitiesMsg{
+		Capabilities: map[model.ProviderID]model.Capability{
+			model.ProviderCodex:  {Provider: model.ProviderCodex, Available: true, Authenticated: true, Summary: "ready"},
+			model.ProviderClaude: {Provider: model.ProviderClaude, Available: true, Authenticated: true, Summary: "ready"},
+			model.ProviderGemini: {Provider: model.ProviderGemini, Available: true, Authenticated: true, Summary: "ready"},
+		},
+	})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if m.screen != screenBrief {
+		t.Fatalf("expected brief screen, got %v", m.screen)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	m = updated.(Model)
+	if m.screen != screenBrief {
+		t.Fatalf("expected to remain on brief screen when typing s, got %v", m.screen)
+	}
+	if m.inFlight {
+		t.Fatal("expected typing s to not start the discussion")
 	}
 }

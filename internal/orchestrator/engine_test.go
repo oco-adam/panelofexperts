@@ -161,6 +161,9 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 	if run.StopReason != model.StopReasonConverged {
 		t.Fatalf("expected converged stop reason, got %q", run.StopReason)
 	}
+	if run.WaitingSummary != "Discussion converged" {
+		t.Fatalf("expected converged waiting summary, got %q", run.WaitingSummary)
+	}
 	if len(run.Rounds) != 1 {
 		t.Fatalf("expected one completed round, got %d", len(run.Rounds))
 	}
@@ -187,6 +190,30 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 	}
 	if !strings.Contains(string(finalData), "# Final proposal") {
 		t.Fatalf("expected final markdown to contain final proposal title, got:\n%s", string(finalData))
+	}
+}
+
+func TestParseProviderOutputSupportsWrappedProviderFormats(t *testing.T) {
+	type payload struct {
+		OK bool `json:"ok"`
+	}
+
+	claudeRaw := `{"structured_output":{"ok":true}}`
+	gotClaude, err := parseProviderOutput[payload](model.ProviderClaude, claudeRaw)
+	if err != nil {
+		t.Fatalf("parse claude wrapper: %v", err)
+	}
+	if !gotClaude.OK {
+		t.Fatal("expected claude wrapper to parse structured output")
+	}
+
+	geminiRaw := "{\"response\":\"```json\\n{\\\"ok\\\":true}\\n```\"}"
+	gotGemini, err := parseProviderOutput[payload](model.ProviderGemini, geminiRaw)
+	if err != nil {
+		t.Fatalf("parse gemini wrapper: %v", err)
+	}
+	if !gotGemini.OK {
+		t.Fatal("expected gemini wrapper to parse response content")
 	}
 }
 

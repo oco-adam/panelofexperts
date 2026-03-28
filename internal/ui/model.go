@@ -260,7 +260,7 @@ func (m *Model) initSetupDefaults() {
 	if len(available) == 0 {
 		available = model.AllProviders()
 	}
-	m.setup.Manager = available[0]
+	m.setup.Manager = preferredManager(available)
 	m.setup.Experts = make([]model.ProviderID, 3)
 	for i := range m.setup.Experts {
 		m.setup.Experts[i] = available[i%len(available)]
@@ -372,7 +372,7 @@ func (m *Model) updateBrief(msg tea.KeyMsg) tea.Cmd {
 			m.events <- briefDoneMsg{Run: updated, Err: err}
 		}(m.run, message)
 		return nil
-	case "s":
+	case "ctrl+s":
 		if m.inFlight {
 			return nil
 		}
@@ -474,7 +474,7 @@ func (m Model) viewBrief() string {
 	if m.inFlight {
 		body = append(body, fmt.Sprintf("%s Manager is updating the brief", m.spin.View()))
 	} else {
-		body = append(body, m.mutedStyle.Render("Enter sends the next message to the manager. Press s to start the discussion."))
+		body = append(body, m.mutedStyle.Render("Enter sends the next message to the manager. Press ctrl+s to start the discussion."))
 	}
 	body = append(body, m.input.View())
 	if m.err != "" {
@@ -623,6 +623,20 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func preferredManager(available []model.ProviderID) model.ProviderID {
+	for _, candidate := range []model.ProviderID{model.ProviderCodex, model.ProviderClaude, model.ProviderGemini} {
+		for _, provider := range available {
+			if provider == candidate {
+				return provider
+			}
+		}
+	}
+	if len(available) == 0 {
+		return model.ProviderCodex
+	}
+	return available[0]
 }
 
 func OutputRoot(cwd string) string {

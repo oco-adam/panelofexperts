@@ -69,103 +69,81 @@ const reviewSchema = `{
 
 func buildBriefPrompt(run model.RunState, userMessage string) string {
 	return strings.TrimSpace(fmt.Sprintf(`
-You are the manager agent for a planning-focused panel of experts. You may inspect the workspace, but do not edit files.
+Return only JSON for a planning brief.
 
-Your job is to refine the discussion brief after the user's latest message.
+Stay in planning mode. Do not inspect files or edit anything during this step.
+Use the latest user request and any existing brief context to set:
+- project_title
+- intent_summary
+- goals
+- constraints
+- ready_to_start
+- open_questions
+- manager_notes
 
-Rules:
-- Stay in planning mode.
-- Read the codebase when useful.
-- Do not change any files.
-- Return JSON only that matches the provided schema.
-- Keep the project title concrete and stable once it is clear.
-- Set ready_to_start to true only when the brief is actionable enough for expert review.
+Keep the title stable once it is clear. Set ready_to_start to true only when the brief is actionable enough for expert review.
 
-Current brief JSON:
-%s
-
-Previous manager turns:
-%s
-
-Latest user message:
-%s
-`, mustJSON(run.Brief), mustJSON(run.ManagerTurns), strings.TrimSpace(userMessage)))
+Target repository path for the later discussion: %s
+Existing brief: %s
+Previous manager turns: %s
+Latest user request: %s
+`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(run.ManagerTurns), strings.TrimSpace(userMessage)))
 }
 
 func buildInitialProposalPrompt(run model.RunState) string {
-	experts := make([]string, 0, len(run.Experts))
-	for _, expert := range run.Experts {
-		experts = append(experts, fmt.Sprintf("%s (%s)", expert.Name, expert.Lens))
-	}
 	return strings.TrimSpace(fmt.Sprintf(`
-You are the manager agent for a panel-of-experts planning workflow.
+Return only JSON for an initial planning proposal.
 
-Create the initial proposal for the expert panel to review.
+Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Produce a concrete proposal that is specific enough for expert review.
 
-Rules:
-- Stay in planning mode and do not edit files.
-- Use the workspace for context when helpful.
-- Produce a plan that is specific enough for experts to critique.
-- Return JSON only that matches the provided schema.
-
-Brief JSON:
-%s
-
-Experts:
-%s
-`, mustJSON(run.Brief), strings.Join(experts, ", ")))
+Brief: %s
+Expert panel: %s
+`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(run.Experts)))
 }
 
 func buildExpertReviewPrompt(run model.RunState, proposal model.Proposal, expert model.AgentConfig) string {
 	lens := strings.ReplaceAll(string(expert.Lens), "_", " ")
 	return strings.TrimSpace(fmt.Sprintf(`
-You are an expert reviewer in a panel-of-experts planning workflow.
+Return only JSON for an expert review.
 
-Your lens: %s
+Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Your review lens: %s
+Review the current proposal critically but constructively. Focus on your lens and flag obvious high-risk issues.
 
-Rules:
-- Stay in planning mode and do not edit files.
-- Review the current proposal critically but constructively.
-- Focus on your lens while still flagging any obvious high-risk issues.
-- Return JSON only that matches the provided schema.
-
-Brief JSON:
-%s
-
-Current proposal JSON:
-%s
-`, lens, mustJSON(run.Brief), mustJSON(proposal)))
+Brief: %s
+Current proposal: %s
+`, run.CWD, lens, mustCompactJSON(run.Brief), mustCompactJSON(proposal)))
 }
 
 func buildMergePrompt(run model.RunState, current model.Proposal, review model.ExpertReview, expert model.AgentConfig) string {
 	return strings.TrimSpace(fmt.Sprintf(`
-You are the manager agent for a panel-of-experts planning workflow.
+Return only JSON for an updated planning proposal.
 
-Update the proposal by considering exactly one expert review at a time.
+Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Consider exactly one expert review at a time. Incorporate useful feedback, reject weak feedback, and keep the proposal coherent.
+If the review does not justify a change, you may return the proposal unchanged. Set converged to true only when the proposal is materially complete and stable.
 
-Rules:
-- Stay in planning mode and do not edit files.
-- Incorporate useful feedback, reject weak feedback, and keep the proposal coherent.
-- If the review does not justify a change, you may return the proposal unchanged.
-- Set converged to true only if the proposal appears materially complete and stable.
-- Return JSON only that matches the provided schema.
-
-Brief JSON:
-%s
-
-Current proposal JSON:
-%s
-
-Expert reviewer:
-%s (%s)
-
-Expert review JSON:
-%s
-`, mustJSON(run.Brief), mustJSON(current), expert.Name, expert.Lens, mustJSON(review)))
+Brief: %s
+Current proposal: %s
+Expert reviewer: %s
+Expert review: %s
+`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(map[string]any{
+		"name": expert.Name,
+		"lens": expert.Lens,
+	}), mustCompactJSON(review)))
 }
 
 func mustJSON(value any) string {
 	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+func mustCompactJSON(value any) string {
+	data, err := json.Marshal(value)
 	if err != nil {
 		return "{}"
 	}

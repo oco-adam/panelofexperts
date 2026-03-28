@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -57,22 +58,29 @@ func (p *ClaudeProvider) Detect(ctx context.Context) model.Capability {
 }
 
 func (p *ClaudeProvider) Run(ctx context.Context, request model.Request, progress chan<- model.ProgressEvent) (model.Result, error) {
+	execCWD := request.CWD
 	args := []string{
 		"-p",
-		"--bare",
 		"--permission-mode", "plan",
 		"--no-session-persistence",
-		"--add-dir", request.CWD,
+		"--output-format", "json",
 		"--json-schema", request.JSONSchema,
-		request.Prompt,
 	}
+	if request.Metadata["workspace_access"] == "none" {
+		execCWD = os.TempDir()
+	} else {
+		args = append(args, "--add-dir", request.CWD)
+	}
+	args = append(args,
+		request.Prompt,
+	)
 	return executeCommand(
 		ctx,
 		model.ProviderClaude,
 		p.Binary,
 		args,
 		"",
-		request.CWD,
+		execCWD,
 		request,
 		progress,
 		nil,

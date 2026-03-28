@@ -31,6 +31,12 @@ type Engine struct {
 	now       func() time.Time
 }
 
+const (
+	managerBriefTimeout    = 5 * time.Minute
+	managerProposalTimeout = 5 * time.Minute
+	expertReviewTimeout    = 4 * time.Minute
+)
+
 func NewEngine(providersList ...providers.AgentProvider) *Engine {
 	providerMap := make(map[model.ProviderID]providers.AgentProvider, len(providersList))
 	for _, provider := range providersList {
@@ -163,7 +169,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		}
 	}()
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(ctx, managerBriefTimeout)
 	defer cancel()
 	result, runErr := provider.Run(timeoutCtx, model.Request{
 		RunID:      run.ID,
@@ -175,7 +181,10 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		Prompt:     buildBriefPrompt(run, userMessage),
 		JSONSchema: briefSchema,
 		OutputKind: "brief",
-		Timeout:    3 * time.Minute,
+		Timeout:    managerBriefTimeout,
+		Metadata: map[string]string{
+			"workspace_access": "none",
+		},
 	}, progressCh)
 	close(progressCh)
 	wg.Wait()
@@ -184,6 +193,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		run.CurrentPhase = "manager_brief_failed"
 		run.StopReason = model.StopReasonManagerFailed
 		run.WaitingSummary = ""
+		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateError, "brief_failed", summarizeError(runErr), e.now())
 		e.touch(&run)
 		_ = store.SaveState(run)
 		notify()
@@ -196,6 +206,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		run.CurrentPhase = "manager_brief_failed"
 		run.StopReason = model.StopReasonManagerFailed
 		run.WaitingSummary = ""
+		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateError, "brief_failed", summarizeError(err), e.now())
 		e.touch(&run)
 		_ = store.SaveState(run)
 		notify()
@@ -211,6 +222,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		UserMessage:  strings.TrimSpace(userMessage),
 		BriefSummary: strings.TrimSpace(brief.IntentSummary),
 	})
+	run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateDone, "brief_ready", "Manager updated the brief", e.now())
 	run.Status = model.RunStatusWaiting
 	run.CurrentPhase = "brief_ready"
 	run.WaitingSummary = "Waiting for the user to start the discussion"
@@ -420,7 +432,7 @@ func (e *Engine) collectExpertReviews(
 				}
 			}()
 
-			timeoutCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+			timeoutCtx, cancel := context.WithTimeout(ctx, expertReviewTimeout)
 			defer cancel()
 			result, runErr := provider.Run(timeoutCtx, model.Request{
 				RunID:      run.ID,
@@ -433,7 +445,7 @@ func (e *Engine) collectExpertReviews(
 				Prompt:     buildExpertReviewPrompt(*run, proposal, agent),
 				JSONSchema: reviewSchema,
 				OutputKind: "review",
-				Timeout:    4 * time.Minute,
+				Timeout:    expertReviewTimeout,
 			}, progressCh)
 			close(progressCh)
 			wg.Wait()
@@ -502,7 +514,7 @@ func (e *Engine) runManagerProposal(
 		}
 	}()
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(ctx, managerProposalTimeout)
 	defer cancel()
 	result, err := provider.Run(timeoutCtx, model.Request{
 		RunID:      run.ID,
@@ -514,7 +526,7 @@ func (e *Engine) runManagerProposal(
 		Prompt:     prompt,
 		JSONSchema: proposalSchema,
 		OutputKind: "proposal",
-		Timeout:    5 * time.Minute,
+		Timeout:    managerProposalTimeout,
 	}, progressCh)
 	close(progressCh)
 	wg.Wait()
@@ -574,6 +586,15 @@ func updateAgentState(status model.AgentStatus, state model.AgentState, step, su
 }
 
 func deriveWaitingSummary(run model.RunState) string {
+	switch run.Status {
+	case model.RunStatusConverged:
+		return "Discussion converged"
+	case model.RunStatusComplete:
+		return "Discussion complete"
+	case model.RunStatusFailed:
+		return ""
+	}
+
 	active := []string{}
 	waitingExperts := []string{}
 	waitingManager := false
@@ -599,12 +620,6 @@ func deriveWaitingSummary(run model.RunState) string {
 	switch run.Status {
 	case model.RunStatusWaiting:
 		return "Waiting for the next user action"
-	case model.RunStatusConverged:
-		return "Discussion converged"
-	case model.RunStatusComplete:
-		return "Discussion complete"
-	case model.RunStatusFailed:
-		return ""
 	default:
 		return run.WaitingSummary
 	}
@@ -638,22 +653,30 @@ func (e *Engine) touch(run *model.RunState) {
 func parseProviderOutput[T any](provider model.ProviderID, raw string) (T, error) {
 	var zero T
 
-	if value, err := decodeDirect[T](raw); err == nil {
-		return value, nil
-	}
 	var wrapped struct {
-		Response json.RawMessage `json:"response"`
+		Response         json.RawMessage `json:"response"`
+		StructuredOutput json.RawMessage `json:"structured_output"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &wrapped); err == nil && len(wrapped.Response) > 0 {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &wrapped); err == nil {
+		if len(wrapped.StructuredOutput) > 0 {
+			if value, err := decodeDirect[T](string(wrapped.StructuredOutput)); err == nil {
+				return value, nil
+			}
+		}
 		if len(wrapped.Response) > 0 && wrapped.Response[0] == '"' {
 			var inner string
 			if err := json.Unmarshal(wrapped.Response, &inner); err == nil {
 				return decodeDirect[T](inner)
 			}
 		}
-		if value, err := decodeDirect[T](string(wrapped.Response)); err == nil {
-			return value, nil
+		if len(wrapped.Response) > 0 {
+			if value, err := decodeDirect[T](string(wrapped.Response)); err == nil {
+				return value, nil
+			}
 		}
+	}
+	if value, err := decodeDirect[T](raw); err == nil {
+		return value, nil
 	}
 	return zero, fmt.Errorf("unable to parse %s response as %T", provider, zero)
 }

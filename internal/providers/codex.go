@@ -3,7 +3,6 @@ package providers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +53,11 @@ func (p *CodexProvider) Detect(_ context.Context) model.Capability {
 }
 
 func (p *CodexProvider) Run(ctx context.Context, request model.Request, progress chan<- model.ProgressEvent) (model.Result, error) {
+	execCWD := request.CWD
+	if request.Metadata["workspace_access"] == "none" {
+		execCWD = os.TempDir()
+	}
+
 	schemaFile, err := os.CreateTemp("", "panelofexperts-codex-schema-*.json")
 	if err != nil {
 		return model.Result{}, err
@@ -75,7 +79,7 @@ func (p *CodexProvider) Run(ctx context.Context, request model.Request, progress
 
 	args := []string{
 		"exec",
-		"-C", request.CWD,
+		"-C", execCWD,
 		"-s", "read-only",
 		"--ephemeral",
 		"--json",
@@ -83,7 +87,7 @@ func (p *CodexProvider) Run(ctx context.Context, request model.Request, progress
 		"--output-last-message", outputFile.Name(),
 		"-",
 	}
-	if !insideGitRepo(ctx, request.CWD) {
+	if !insideGitRepo(ctx, execCWD) {
 		args = append(args[:len(args)-1], append([]string{"--skip-git-repo-check"}, args[len(args)-1:]...)...)
 	}
 
@@ -93,7 +97,7 @@ func (p *CodexProvider) Run(ctx context.Context, request model.Request, progress
 		p.Binary,
 		args,
 		request.Prompt,
-		request.CWD,
+		execCWD,
 		request,
 		progress,
 		parseCodexLine,
@@ -124,12 +128,32 @@ func parseCodexLine(line string, progress chan<- model.ProgressEvent, request mo
 	if step == "" {
 		step = asString(payload["event"])
 	}
+	switch step {
+	case "thread.started", "turn.started", "item.started":
+		return
+	}
 	summary := asString(payload["message"])
 	if summary == "" {
 		summary = asString(payload["summary"])
 	}
+	if summary == "" && step == "item.completed" {
+		if item, ok := payload["item"].(map[string]any); ok {
+			itemType := asString(item["type"])
+			if itemType == "agent_message" {
+				text := asString(item["text"])
+				if text != "" {
+					step = "response_ready"
+					summary = summarizeLine(text)
+				}
+			}
+		}
+	}
 	if summary == "" {
-		summary = fmt.Sprintf("Codex event: %s", step)
+		if step == "turn.completed" {
+			summary = "Codex finished the turn"
+		} else {
+			return
+		}
 	}
 	emitProgress(progress, model.ProgressEvent{
 		Timestamp: time.Now().UTC(),

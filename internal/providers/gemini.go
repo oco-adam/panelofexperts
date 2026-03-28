@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"os"
 
 	"panelofexperts/internal/model"
 )
@@ -50,11 +51,17 @@ func (p *GeminiProvider) Detect(_ context.Context) model.Capability {
 }
 
 func (p *GeminiProvider) Run(ctx context.Context, request model.Request, progress chan<- model.ProgressEvent) (model.Result, error) {
+	execCWD := request.CWD
 	args := []string{
+		"--model", "gemini-2.5-flash",
 		"--prompt", request.Prompt,
 		"--output-format", "json",
-		"--sandbox",
-		"--include-directories", request.CWD,
+		"--approval-mode", "plan",
+	}
+	if request.Metadata["workspace_access"] == "none" {
+		execCWD = os.TempDir()
+	} else {
+		args = append(args, "--include-directories", request.CWD)
 	}
 	return executeCommand(
 		ctx,
@@ -62,7 +69,7 @@ func (p *GeminiProvider) Run(ctx context.Context, request model.Request, progres
 		p.Binary,
 		args,
 		"",
-		request.CWD,
+		execCWD,
 		request,
 		progress,
 		nil,

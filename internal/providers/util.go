@@ -140,20 +140,21 @@ func executeCommand(
 	})
 
 	go streamOutput(stderrPipe, &stderrBuf, stderrDone, func(line string) {
-		if strings.TrimSpace(line) == "" {
+		if summary, ok := importantStderrSummary(line); !ok {
 			return
+		} else {
+			emitProgress(progress, model.ProgressEvent{
+				Timestamp: time.Now().UTC(),
+				RunID:     request.RunID,
+				Round:     request.Round,
+				AgentID:   request.AgentID,
+				Role:      request.Role,
+				Provider:  provider,
+				State:     model.AgentStateRunning,
+				Step:      "stderr",
+				Summary:   summary,
+			})
 		}
-		emitProgress(progress, model.ProgressEvent{
-			Timestamp: time.Now().UTC(),
-			RunID:     request.RunID,
-			Round:     request.Round,
-			AgentID:   request.AgentID,
-			Role:      request.Role,
-			Provider:  provider,
-			State:     model.AgentStateRunning,
-			Step:      "stderr",
-			Summary:   summarizeLine(line),
-		})
 	})
 
 	waitErr := cmd.Wait()
@@ -204,6 +205,31 @@ func summarizeLine(line string) string {
 		return line[:93] + "..."
 	}
 	return line
+}
+
+func importantStderrSummary(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", false
+	}
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "shell_snapshot") ||
+		strings.Contains(lower, "using filekeychain fallback") ||
+		strings.Contains(lower, "loaded cached credentials") ||
+		strings.Contains(lower, "loading extension:") ||
+		strings.Contains(lower, "registering notification handlers") ||
+		strings.Contains(lower, "supports tool updates") ||
+		strings.Contains(lower, "supports prompt updates") ||
+		strings.Contains(lower, "mcp context refresh") {
+		return "", false
+	}
+	if strings.Contains(lower, "error") ||
+		strings.Contains(lower, "failed") ||
+		strings.Contains(lower, "denied") ||
+		strings.Contains(lower, "not logged in") {
+		return summarizeLine(line), true
+	}
+	return "", false
 }
 
 func insideGitRepo(ctx context.Context, cwd string) bool {

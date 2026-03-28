@@ -264,7 +264,10 @@ func NewRunState(id, cwd, outputDir string, maxRounds int, manager AgentConfig, 
 		StopReason:     StopReasonNotStarted,
 		WaitingSummary: "Waiting for the manager brief",
 		Brief: Brief{
-			ProjectTitle: defaultProjectTitle(cwd),
+			ProjectTitle:  defaultProjectTitle(cwd),
+			Goals:         []string{},
+			Constraints:   []string{},
+			OpenQuestions: []string{},
 		},
 	}
 	for _, agent := range run.AllAgents() {
