@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"panelofexperts/internal/model"
 	"panelofexperts/internal/orchestrator"
@@ -250,6 +251,56 @@ func TestBriefQuestionFlowUsesStructuredAnswerPrompt(t *testing.T) {
 		if !strings.Contains(submission, expected) {
 			t.Fatalf("expected structured submission to contain %q, got:\n%s", expected, submission)
 		}
+	}
+}
+
+func TestBriefViewFitsShortWindowAndKeepsReplyVisible(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
+	m = updated.(Model)
+
+	m.screen = screenBrief
+	m.run = model.NewRunState(
+		"run-brief",
+		tempDir,
+		OutputRoot(tempDir),
+		5,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{},
+	)
+	m.run.Status = model.RunStatusWaiting
+	m.run.WaitingSummary = "Waiting for the next user action"
+	m.run.Brief.Goals = []string{
+		"Goal one", "Goal two", "Goal three", "Goal four", "Goal five", "Goal six",
+	}
+	m.run.Brief.Constraints = []string{
+		"Constraint one", "Constraint two", "Constraint three", "Constraint four",
+	}
+	m.run.Brief.OpenQuestions = []string{
+		"Which platforms are in scope for launch?",
+		"What update experience is required on desktop and mobile?",
+	}
+	m.run.ManagerTurns = []model.ManagerTurn{
+		{Timestamp: time.Now().UTC(), UserMessage: "Initial request"},
+	}
+	m.syncBriefInput()
+	m.refreshRunViews()
+
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "Manager Question 1 of 2") {
+		t.Fatalf("expected question panel to remain visible, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Reply") || !strings.Contains(view, "A> ") {
+		t.Fatalf("expected reply panel to remain visible, got:\n%s", view)
+	}
+	if height := lipgloss.Height(view); height > m.height {
+		t.Fatalf("expected brief view height <= window height (%d), got %d\n%s", m.height, height, view)
 	}
 }
 

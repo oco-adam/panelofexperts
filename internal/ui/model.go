@@ -521,9 +521,7 @@ func (m *Model) updateResults(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (m *Model) refreshRunViews() {
-	if m.briefViewport.Width() > 0 {
-		m.briefViewport.SetContent(m.briefContent())
-	}
+	m.syncBriefViewportLayout()
 	if m.statusViewport.Width() > 0 {
 		m.statusViewport.SetContent(m.statusContent())
 	}
@@ -598,6 +596,9 @@ func (m Model) viewBrief() string {
 		" ",
 		m.metaBadge("Status", string(m.run.Status)),
 	)
+	briefViewport := m.briefViewport
+	briefViewport.SetContent(m.briefContent())
+	briefViewport.SetHeight(m.briefViewport.Height())
 	body := []string{
 		m.header(m.run.ProjectTitle, "Manager Brief"),
 		"",
@@ -605,8 +606,7 @@ func (m Model) viewBrief() string {
 		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
 		"",
 		m.renderDivider("Brief Snapshot"),
-		m.renderPanel("Brief Snapshot", m.briefViewport.View(), m.width-4, "81"),
-		"",
+		m.renderPanel("Brief Snapshot", briefViewport.View(), m.width-4, "81"),
 	}
 	if question, index, total := m.activeBriefQuestion(); question != "" {
 		body = append(body,
@@ -616,7 +616,6 @@ func (m Model) viewBrief() string {
 				"",
 				question,
 			}, "\n"), m.width-4, "214"),
-			"",
 		)
 	}
 	if m.inFlight {
@@ -744,6 +743,57 @@ func (m *Model) syncSetupInputFocus() {
 		return
 	}
 	m.setupInput.Blur()
+}
+
+func (m *Model) syncBriefViewportLayout() {
+	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.briefViewport.Width() == 0 {
+		return
+	}
+
+	meta := lipgloss.JoinHorizontal(lipgloss.Center,
+		m.metaBadge("Run", m.run.ID),
+		" ",
+		m.metaBadge("Status", string(m.run.Status)),
+	)
+	headerBlock := strings.Join([]string{
+		m.header(m.run.ProjectTitle, "Manager Brief"),
+		"",
+		meta,
+		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
+		"",
+		m.renderDivider("Brief Snapshot"),
+	}, "\n")
+
+	footerParts := []string{}
+	if question, index, total := m.activeBriefQuestion(); question != "" {
+		footerParts = append(footerParts,
+			m.renderDivider("Current Question"),
+			m.renderPanel("Manager Question", strings.Join([]string{
+				fmt.Sprintf("Manager Question %d of %d", index+1, total),
+				"",
+				question,
+			}, "\n"), m.width-4, "214"),
+		)
+	}
+
+	if m.inFlight {
+		footerParts = append(footerParts, fmt.Sprintf("%s %s", m.spin.View(), m.infoStyle.Render("Manager is updating the brief")))
+	} else if _, index, total := m.activeBriefQuestion(); total > 0 {
+		footerParts = append(footerParts, m.mutedStyle.Render(fmt.Sprintf("Enter submits your answer to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)))
+	} else {
+		footerParts = append(footerParts, m.mutedStyle.Render("Enter sends the next message to the manager. Press ctrl+s to start the discussion."))
+	}
+	footerParts = append(footerParts, m.renderPanel("Reply", m.input.View(), m.width-4, "67"))
+	if m.err != "" {
+		footerParts = append(footerParts, "", m.errorStyle.Render(m.err))
+	}
+
+	available := m.height - lipgloss.Height(headerBlock) - lipgloss.Height(strings.Join(footerParts, "\n")) - 5
+	if available < 2 {
+		available = 2
+	}
+	m.briefViewport.SetHeight(available)
+	m.briefViewport.SetContent(m.briefContent())
 }
 
 func (m Model) activeBriefQuestion() (string, int, int) {
