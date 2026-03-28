@@ -67,6 +67,7 @@ type Model struct {
 	setup        SetupState
 	run          model.RunState
 
+	setupInput     textinput.Model
 	input          textinput.Model
 	briefViewport  viewport.Model
 	statusViewport viewport.Model
@@ -90,12 +91,19 @@ type Model struct {
 	dividerStyle        lipgloss.Style
 }
 
+const setupFieldCount = 7
+
 func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
 	input := textinput.New()
 	input.Focus()
 	input.Prompt = "> "
 	input.CharLimit = 0
 	input.SetWidth(80)
+	setupInput := textinput.New()
+	setupInput.Prompt = "Intent> "
+	setupInput.Placeholder = "Tell the manager what you want to accomplish"
+	setupInput.CharLimit = 0
+	setupInput.SetWidth(80)
 	inputStyles := textinput.DefaultStyles(true)
 	inputStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
 	inputStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
@@ -104,6 +112,8 @@ func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
 	inputStyles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	inputStyles.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 	input.SetStyles(inputStyles)
+	setupInput.SetStyles(inputStyles)
+	setupInput.Blur()
 
 	spin := spinner.New()
 	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
@@ -119,8 +129,9 @@ func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
 			OutputRoot:  outputRoot,
 			Experts:     []model.ProviderID{model.ProviderClaude, model.ProviderGemini, model.ProviderCodex},
 		},
-		input: input,
-		spin:  spin,
+		setupInput: setupInput,
+		input:      input,
+		spin:       spin,
 		headerStyle: lipgloss.NewStyle().
 			Padding(0, 1),
 		headerTitleStyle: lipgloss.NewStyle().
@@ -195,6 +206,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.capabilities = msg.Capabilities
 		m.screen = screenSetup
 		m.initSetupDefaults()
+		m.syncSetupInputFocus()
 		m.syncBriefInput()
 	case snapshotMsg:
 		m.run = msg.Run
@@ -243,6 +255,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 	}
+	if m.screen == screenSetup && m.setup.Focus == 6 {
+		var cmd tea.Cmd
+		m.setupInput, cmd = m.setupInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	if m.screen == screenMonitor {
 		var cmd tea.Cmd
 		m.timelineView, cmd = m.timelineView.Update(msg)
@@ -269,7 +286,10 @@ func (m Model) View() tea.View {
 	var content string
 	if m.width == 0 || m.height == 0 {
 		content = "Loading..."
-		return tea.NewView(content)
+		view := tea.NewView(content)
+		view.AltScreen = true
+		view.MouseMode = tea.MouseModeCellMotion
+		return view
 	}
 
 	switch m.screen {
@@ -284,7 +304,10 @@ func (m Model) View() tea.View {
 	case screenResults:
 		content = m.viewResults()
 	}
-	return tea.NewView(content)
+	view := tea.NewView(content)
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
 }
 
 func waitForEvent(events <-chan tea.Msg) tea.Cmd {
@@ -328,38 +351,74 @@ func (m Model) availableProviders() []model.ProviderID {
 }
 
 func (m *Model) updateSetup(msg tea.KeyMsg) tea.Cmd {
+	if m.setup.Focus == 6 {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return tea.Quit
+		case "tab", "down":
+			m.setup.Focus = (m.setup.Focus + 1) % setupFieldCount
+			m.syncSetupInputFocus()
+		case "shift+tab", "up":
+			m.setup.Focus = (m.setup.Focus + setupFieldCount - 1) % setupFieldCount
+			m.syncSetupInputFocus()
+		case "enter":
+			return m.createRunFromSetup()
+		}
+		return nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return tea.Quit
 	case "tab", "down", "j":
-		m.setup.Focus = (m.setup.Focus + 1) % 6
+		m.setup.Focus = (m.setup.Focus + 1) % setupFieldCount
+		m.syncSetupInputFocus()
 	case "shift+tab", "up", "k":
-		m.setup.Focus = (m.setup.Focus + 5) % 6
+		m.setup.Focus = (m.setup.Focus + setupFieldCount - 1) % setupFieldCount
+		m.syncSetupInputFocus()
 	case "left", "h":
 		m.adjustSetup(-1)
 	case "right", "l":
 		m.adjustSetup(1)
 	case "enter":
-		if m.inFlight {
-			return nil
-		}
-		run, err := m.engine.NewRun(orchestrator.NewRunOptions{
-			CWD:             m.setup.CWD,
-			OutputRoot:      m.setup.OutputRoot,
-			MaxRounds:       m.setup.MaxRounds,
-			ManagerProvider: m.setup.Manager,
-			ExpertProviders: append([]model.ProviderID{}, m.setup.Experts[:m.setup.ExpertCount]...),
-		})
-		if err != nil {
-			m.err = err.Error()
-			return nil
-		}
-		m.err = ""
-		m.run = run
-		m.syncBriefInput()
-		m.refreshRunViews()
-		m.screen = screenBrief
+		return m.createRunFromSetup()
 	}
+	return nil
+}
+
+func (m *Model) createRunFromSetup() tea.Cmd {
+	if m.inFlight {
+		return nil
+	}
+	run, err := m.engine.NewRun(orchestrator.NewRunOptions{
+		CWD:             m.setup.CWD,
+		OutputRoot:      m.setup.OutputRoot,
+		MaxRounds:       m.setup.MaxRounds,
+		ManagerProvider: m.setup.Manager,
+		ExpertProviders: append([]model.ProviderID{}, m.setup.Experts[:m.setup.ExpertCount]...),
+	})
+	if err != nil {
+		m.err = err.Error()
+		return nil
+	}
+	m.err = ""
+	m.run = run
+	m.syncBriefInput()
+	m.refreshRunViews()
+	m.screen = screenBrief
+
+	initialIntent := strings.TrimSpace(m.setupInput.Value())
+	if initialIntent == "" {
+		return nil
+	}
+	m.setupInput.SetValue("")
+	m.inFlight = true
+	go func(run model.RunState, text string) {
+		updated, err := m.engine.UpdateBrief(context.Background(), run, text, func(snapshot model.RunState) {
+			m.events <- snapshotMsg{Run: snapshot}
+		})
+		m.events <- briefDoneMsg{Run: updated, Err: err}
+	}(m.run, initialIntent)
 	return nil
 }
 
@@ -488,6 +547,11 @@ func (m Model) viewSetup() string {
 		m.renderLabeledLine("Workspace", m.setup.CWD),
 		m.renderLabeledLine("Output root", m.setup.OutputRoot),
 	}
+	intentContent := strings.Join([]string{
+		m.setupInput.View(),
+		"",
+		m.mutedStyle.Render("Create the run and this message will be sent to the manager immediately."),
+	}, "\n")
 	providerLines := []string{}
 	for _, id := range model.AllProviders() {
 		capability := m.capabilities[id]
@@ -514,10 +578,13 @@ func (m Model) viewSetup() string {
 		m.renderDivider("Run Configuration"),
 		m.renderPanel("Panel Setup", strings.Join(configLines, "\n"), m.width-4, "81"),
 		"",
+		m.renderDivider("Initial Intent"),
+		m.renderPanel("Initial Intent", intentContent, m.width-4, "67"),
+		"",
 		m.renderDivider("Providers"),
 		m.renderPanel("Provider Status", strings.TrimSpace(strings.Join(providerLines, "\n")), m.width-4, "214"),
 		"",
-		m.mutedStyle.Render("Use tab/j/k to move, h/l to change values, enter to create the run."),
+		m.mutedStyle.Render("Use tab/j/k to move, h/l to change values, enter to create the run. Focus Initial Intent to type your first request."),
 	}
 	if m.err != "" {
 		lines = append(lines, "", m.errorStyle.Render(m.err))
@@ -669,6 +736,14 @@ func (m *Model) syncBriefInput() {
 	}
 	m.input.Placeholder = "Tell the manager what you want to accomplish"
 	m.input.Prompt = "> "
+}
+
+func (m *Model) syncSetupInputFocus() {
+	if m.setup.Focus == 6 {
+		m.setupInput.Focus()
+		return
+	}
+	m.setupInput.Blur()
 }
 
 func (m Model) activeBriefQuestion() (string, int, int) {

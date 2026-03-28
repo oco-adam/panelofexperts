@@ -2,14 +2,18 @@ package ui
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"panelofexperts/internal/model"
 	"panelofexperts/internal/orchestrator"
 )
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 type stubProvider struct {
 	id model.ProviderID
@@ -28,6 +32,31 @@ func (s stubProvider) Detect(context.Context) model.Capability {
 }
 
 func (s stubProvider) Run(context.Context, model.Request, chan<- model.ProgressEvent) (model.Result, error) {
+	return model.Result{}, nil
+}
+
+type briefStubProvider struct {
+	id model.ProviderID
+}
+
+func (s briefStubProvider) ID() model.ProviderID { return s.id }
+
+func (s briefStubProvider) Detect(context.Context) model.Capability {
+	return model.Capability{
+		Provider:      s.id,
+		DisplayName:   model.ProviderDisplayName(s.id),
+		Available:     true,
+		Authenticated: true,
+		Summary:       "ready",
+	}
+}
+
+func (s briefStubProvider) Run(_ context.Context, request model.Request, progress chan<- model.ProgressEvent) (model.Result, error) {
+	if request.OutputKind == "brief" {
+		return model.Result{
+			Stdout: `{"project_title":"Panel UI","intent_summary":"Build the first brief.","task_kind":"plan","target_file_path":"","goals":["Ship the app"],"constraints":[],"ready_to_start":true,"open_questions":[],"manager_notes":"Ready."}`,
+		}, nil
+	}
 	return model.Result{}, nil
 }
 
@@ -85,6 +114,7 @@ func TestModelScreenTransitionsAndStatusContent(t *testing.T) {
 	}
 
 	monitorView := m.View().Content
+	monitorView = stripANSI(monitorView)
 	if !strings.Contains(monitorView, "Panel UI") || !strings.Contains(monitorView, "Waiting on Claude expert and Gemini expert reviews") {
 		t.Fatalf("expected monitor view to surface title and waiting summary, got:\n%s", monitorView)
 	}
@@ -99,8 +129,9 @@ func TestModelScreenTransitionsAndStatusContent(t *testing.T) {
 	if m.screen != screenResults {
 		t.Fatalf("expected results screen, got %v", m.screen)
 	}
-	if !strings.Contains(m.View().Content, "# Final proposal") || !strings.Contains(m.View().Content, "/tmp/DESIGN.md") {
-		t.Fatalf("expected final markdown to render in results view, got:\n%s", m.View().Content)
+	resultsView := stripANSI(m.View().Content)
+	if !strings.Contains(resultsView, "# Final proposal") || !strings.Contains(resultsView, "/tmp/DESIGN.md") {
+		t.Fatalf("expected final markdown to render in results view, got:\n%s", resultsView)
 	}
 }
 
@@ -139,6 +170,38 @@ func TestTypingLetterSDoesNotStartDiscussion(t *testing.T) {
 	}
 }
 
+func TestSetupScreenShowsInitialIntentInput(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	updated, _ = m.Update(capabilitiesMsg{
+		Capabilities: map[model.ProviderID]model.Capability{
+			model.ProviderCodex:  {Provider: model.ProviderCodex, Available: true, Authenticated: true, Summary: "ready"},
+			model.ProviderClaude: {Provider: model.ProviderClaude, Available: true, Authenticated: true, Summary: "ready"},
+			model.ProviderGemini: {Provider: model.ProviderGemini, Available: true, Authenticated: true, Summary: "ready"},
+		},
+	})
+	m = updated.(Model)
+
+	view := stripANSI(m.View().Content)
+	for _, expected := range []string{
+		"Initial Intent",
+		"Tell the manager what you want to accomplish",
+		"Create the run and this message will be sent to the manager immediately.",
+	} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("expected setup view to contain %q, got:\n%s", expected, view)
+		}
+	}
+}
+
 func TestBriefQuestionFlowUsesStructuredAnswerPrompt(t *testing.T) {
 	tempDir := t.TempDir()
 	engine := orchestrator.NewEngine(
@@ -166,7 +229,7 @@ func TestBriefQuestionFlowUsesStructuredAnswerPrompt(t *testing.T) {
 	m.syncBriefInput()
 	m.refreshRunViews()
 
-	view := m.View().Content
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "Manager Question 1 of 2") {
 		t.Fatalf("expected brief view to show the current manager question, got:\n%s", view)
 	}
@@ -186,6 +249,63 @@ func TestBriefQuestionFlowUsesStructuredAnswerPrompt(t *testing.T) {
 	} {
 		if !strings.Contains(submission, expected) {
 			t.Fatalf("expected structured submission to contain %q, got:\n%s", expected, submission)
+		}
+	}
+}
+
+func stripANSI(input string) string {
+	return ansiPattern.ReplaceAllString(input, "")
+}
+
+func TestSetupIntentStartsFirstBriefUpdate(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		briefStubProvider{id: model.ProviderCodex},
+		briefStubProvider{id: model.ProviderClaude},
+		briefStubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	updated, _ = m.Update(capabilitiesMsg{
+		Capabilities: map[model.ProviderID]model.Capability{
+			model.ProviderCodex:  {Provider: model.ProviderCodex, Available: true, Authenticated: true, Summary: "ready"},
+			model.ProviderClaude: {Provider: model.ProviderClaude, Available: true, Authenticated: true, Summary: "ready"},
+			model.ProviderGemini: {Provider: model.ProviderGemini, Available: true, Authenticated: true, Summary: "ready"},
+		},
+	})
+	m = updated.(Model)
+
+	m.setup.Focus = 6
+	m.syncSetupInputFocus()
+	m.setupInput.SetValue("Create the first brief")
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if m.screen != screenBrief {
+		t.Fatalf("expected to advance to the brief screen, got %v", m.screen)
+	}
+	if !m.inFlight {
+		t.Fatal("expected initial setup intent to start the first brief update immediately")
+	}
+
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-m.events:
+			switch msg := event.(type) {
+			case briefDoneMsg:
+				if msg.Err != nil {
+					t.Fatalf("unexpected brief error: %v", msg.Err)
+				}
+				if msg.Run.ProjectTitle != "Panel UI" {
+					t.Fatalf("expected manager brief update to complete, got project title %q", msg.Run.ProjectTitle)
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for the automatic brief update")
 		}
 	}
 }
