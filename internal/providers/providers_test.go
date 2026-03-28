@@ -95,8 +95,42 @@ printf '{"project_title":"X","intent_summary":"Y","goals":[],"constraints":[],"r
 	if !strings.Contains(args, "--add-dir") {
 		t.Fatalf("expected claude args to include workspace access flag, got:\n%s", args)
 	}
+	if strings.Contains(args, "--effort") {
+		t.Fatalf("expected manager run to preserve the default Claude effort, got:\n%s", args)
+	}
 	if strings.TrimSpace(mustRead(t, cwdFile)) != dir {
 		t.Fatalf("expected claude to run in request cwd when workspace access is allowed")
+	}
+}
+
+func TestClaudeExpertRunUsesLowerEffort(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	script := writeScript(t, dir, "claude-stub.sh", `#!/bin/sh
+printf '%s\n' "$@" > "$POE_ARGS_FILE"
+printf '{"lens":"architecture","summary":"ok","strengths":[],"concerns":[],"recommendations":[],"blocking_risks":[],"requires_changes":false}'
+`)
+	t.Setenv("POE_ARGS_FILE", argsFile)
+
+	provider := NewClaudeProvider(script)
+	_, err := provider.Run(context.Background(), model.Request{
+		RunID:      "run-1",
+		AgentID:    "expert-1",
+		Role:       model.RoleExpert,
+		CWD:        dir,
+		Prompt:     "review the plan",
+		JSONSchema: "{}",
+		OutputKind: "review",
+		Timeout:    time.Minute,
+	}, make(chan model.ProgressEvent, 4))
+	if err != nil {
+		t.Fatalf("claude expert run: %v", err)
+	}
+	args := mustRead(t, argsFile)
+	for _, expected := range []string{"--effort", "low"} {
+		if !strings.Contains(args, expected) {
+			t.Fatalf("expected claude expert args to contain %q, got:\n%s", expected, args)
+		}
 	}
 }
 
@@ -213,6 +247,25 @@ printf '{"response":"{\"ok\":true}"}'
 	}
 	if strings.TrimSpace(mustRead(t, cwdFile)) == dir {
 		t.Fatalf("expected gemini to avoid the repo cwd when workspace access is disabled")
+	}
+}
+
+func TestImportantStderrSummaryFiltersProviderNoise(t *testing.T) {
+	for _, line := range []string{
+		"2026-03-28T12:54:32.230113Z ERROR rmcp::transport::worker: worker quit with fatal: Transport closed",
+		"2026-03-28T12:53:41.984201Z  WARN codex_exec: thread/read failed while backfilling turn items",
+		"Error executing tool exit_plan_mode: Tool \"exit_plan_mode\" not found.",
+		"Error executing tool write_file: Tool execution denied by policy. You are in Plan Mode.",
+		"2026-03-28T13:10:54.239476Z  WARN codex_core::plugins::manager: failed to warm featured plugin",
+		"<div class=\"data\"><div class=\"main-wrapper\" role=\"main\">",
+	} {
+		if summary, ok := importantStderrSummary(line); ok {
+			t.Fatalf("expected noisy stderr to be filtered, got ok=%v summary=%q", ok, summary)
+		}
+	}
+
+	if summary, ok := importantStderrSummary("fatal error: authentication failed"); !ok || !strings.Contains(summary, "authentication failed") {
+		t.Fatalf("expected real stderr error to remain visible, got ok=%v summary=%q", ok, summary)
 	}
 }
 

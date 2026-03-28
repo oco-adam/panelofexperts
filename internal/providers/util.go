@@ -166,6 +166,12 @@ func executeCommand(
 	result.Stderr = stderrBuf.String()
 	result.ExitCode = exitCode(waitErr)
 	if waitErr != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return result, fmt.Errorf("%s timed out after %s", provider, request.Timeout)
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return result, fmt.Errorf("%s was cancelled", provider)
+		}
 		return result, fmt.Errorf("%s exited with code %d: %w", provider, result.ExitCode, waitErr)
 	}
 	return result, nil
@@ -220,7 +226,15 @@ func importantStderrSummary(line string) (string, bool) {
 		strings.Contains(lower, "registering notification handlers") ||
 		strings.Contains(lower, "supports tool updates") ||
 		strings.Contains(lower, "supports prompt updates") ||
-		strings.Contains(lower, "mcp context refresh") {
+		strings.Contains(lower, "mcp context refresh") ||
+		strings.Contains(lower, "rmcp::transport::worker") ||
+		strings.Contains(lower, "failed to warm featured plugin") ||
+		strings.Contains(lower, "thread/read failed while backfilling turn items") ||
+		strings.Contains(lower, "tool execution denied by policy") ||
+		strings.Contains(lower, "error executing tool exit_plan_mode") ||
+		strings.Contains(lower, "<div class=") ||
+		strings.Contains(lower, "<html") ||
+		strings.Contains(lower, "<!doctype html") {
 		return "", false
 	}
 	if strings.Contains(lower, "error") ||

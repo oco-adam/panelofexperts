@@ -33,9 +33,11 @@ type Engine struct {
 }
 
 const (
-	managerBriefTimeout    = 5 * time.Minute
-	managerProposalTimeout = 5 * time.Minute
-	expertReviewTimeout    = 4 * time.Minute
+	managerBriefTimeout        = 5 * time.Minute
+	managerProposalTimeout     = 5 * time.Minute
+	defaultExpertReviewTimeout = 5 * time.Minute
+	claudeExpertReviewTimeout  = 5 * time.Minute
+	promptOnlyRetryTimeout     = 90 * time.Second
 )
 
 func NewEngine(providersList ...providers.AgentProvider) *Engine {
@@ -73,7 +75,7 @@ func (e *Engine) NewRun(options NewRunOptions) (model.RunState, error) {
 		options.CWD = "."
 	}
 	if options.MaxRounds <= 0 {
-		options.MaxRounds = 10
+		options.MaxRounds = 5
 	}
 	absCWD, err := filepath.Abs(options.CWD)
 	if err != nil {
@@ -254,6 +256,13 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 		}
 		onSnapshot(run.Clone())
 	}
+	syncSnapshot := func(fn func()) {
+		mu.Lock()
+		defer mu.Unlock()
+		fn()
+		_ = store.SaveState(run)
+		notify()
+	}
 	updateProgress := func(event model.ProgressEvent) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -299,7 +308,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 			StartedAt:       e.now(),
 		}
 
-		reviews, err := e.collectExpertReviews(ctx, &run, store, updateProgress, round, proposal)
+		reviews, err := e.collectExpertReviews(ctx, &run, store, updateProgress, syncSnapshot, round, proposal)
 		if err != nil {
 			run.Status = model.RunStatusFailed
 			run.CurrentPhase = "expert_reviews_failed"
@@ -353,6 +362,10 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 			version = nextVersion
 			roundState.ProposalVersion = version
 			roundState.Proposal = proposal
+			syncSnapshot(func() {
+				run.AgentStatuses[expert.ID] = updateAgentState(run.AgentStatuses[expert.ID], model.AgentStateDone, "review_merged", "Manager incorporated the review", e.now())
+				e.touch(&run)
+			})
 		}
 
 		now := e.now()
@@ -431,6 +444,7 @@ func (e *Engine) collectExpertReviews(
 	run *model.RunState,
 	store *Store,
 	updateProgress func(model.ProgressEvent),
+	syncSnapshot func(func()),
 	round int,
 	proposal model.Proposal,
 ) ([]model.ExpertReview, error) {
@@ -460,9 +474,8 @@ func (e *Engine) collectExpertReviews(
 				}
 			}()
 
-			timeoutCtx, cancel := context.WithTimeout(ctx, expertReviewTimeout)
-			defer cancel()
-			result, runErr := provider.Run(timeoutCtx, model.Request{
+			reviewTimeout := reviewTimeoutFor(agent.Provider)
+			request := model.Request{
 				RunID:      run.ID,
 				Round:      round,
 				Version:    run.LatestProposalVersion(),
@@ -473,17 +486,13 @@ func (e *Engine) collectExpertReviews(
 				Prompt:     buildExpertReviewPrompt(*run, proposal, agent),
 				JSONSchema: reviewSchema,
 				OutputKind: "review",
-				Timeout:    expertReviewTimeout,
-			}, progressCh)
+				Timeout:    reviewTimeout,
+			}
+			review, runErr := e.runExpertReview(ctx, provider, request, progressCh)
 			close(progressCh)
 			wg.Wait()
 			if runErr != nil {
 				outcomes <- outcome{index: index, agent: agent, err: runErr}
-				return
-			}
-			review, parseErr := parseProviderOutput[model.ExpertReview](agent.Provider, result.Stdout)
-			if parseErr != nil {
-				outcomes <- outcome{index: index, agent: agent, err: parseErr}
 				return
 			}
 			review.Lens = agent.Lens
@@ -499,10 +508,17 @@ func (e *Engine) collectExpertReviews(
 		results = append(results, result)
 		if result.err == nil {
 			successes++
-			e.appendTimeline(run, round, result.agent.ID, fmt.Sprintf("%s returned a %s review", result.agent.Name, result.agent.Lens))
+			syncSnapshot(func() {
+				run.AgentStatuses[result.agent.ID] = updateAgentState(run.AgentStatuses[result.agent.ID], model.AgentStateDone, "review_complete", result.review.Summary, e.now())
+				e.appendTimeline(run, round, result.agent.ID, fmt.Sprintf("%s returned a %s review", result.agent.Name, result.agent.Lens))
+				e.touch(run)
+			})
 		} else {
-			run.AgentStatuses[result.agent.ID] = updateAgentState(run.AgentStatuses[result.agent.ID], model.AgentStateError, "review_failed", summarizeError(result.err), e.now())
-			e.appendTimeline(run, round, result.agent.ID, fmt.Sprintf("%s failed: %s", result.agent.Name, summarizeError(result.err)))
+			syncSnapshot(func() {
+				run.AgentStatuses[result.agent.ID] = updateAgentState(run.AgentStatuses[result.agent.ID], model.AgentStateError, "review_failed", summarizeError(result.err), e.now())
+				e.appendTimeline(run, round, result.agent.ID, fmt.Sprintf("%s failed: %s", result.agent.Name, summarizeError(result.err)))
+				e.touch(run)
+			})
 		}
 	}
 	if successes == 0 {
@@ -518,9 +534,60 @@ func (e *Engine) collectExpertReviews(
 			continue
 		}
 		reviews = append(reviews, result.review)
-		run.AgentStatuses[result.agent.ID] = updateAgentState(run.AgentStatuses[result.agent.ID], model.AgentStateDone, "review_complete", result.review.Summary, e.now())
 	}
 	return reviews, nil
+}
+
+func (e *Engine) runExpertReview(
+	ctx context.Context,
+	provider providers.AgentProvider,
+	request model.Request,
+	progress chan<- model.ProgressEvent,
+) (model.ExpertReview, error) {
+	review, err := runExpertReviewAttempt(ctx, provider, request, progress)
+	if err == nil || !shouldRetryReview(err) {
+		return review, err
+	}
+
+	if progress != nil {
+		select {
+		case progress <- model.ProgressEvent{
+			Timestamp: time.Now().UTC(),
+			RunID:     request.RunID,
+			Round:     request.Round,
+			AgentID:   request.AgentID,
+			Role:      request.Role,
+			Provider:  provider.ID(),
+			State:     model.AgentStateRunning,
+			Step:      "retry",
+			Summary:   "Retrying review without workspace tools",
+		}:
+		default:
+		}
+	}
+
+	retryRequest := request
+	retryRequest.Timeout = promptOnlyRetryTimeout
+	retryRequest.Metadata = cloneMetadata(request.Metadata)
+	retryRequest.Metadata["workspace_access"] = "none"
+	retryRequest.Prompt = strings.TrimSpace(request.Prompt + "\n\nRetry mode: do not inspect the repository or use tools. Review only the supplied brief and proposal.")
+	return runExpertReviewAttempt(ctx, provider, retryRequest, progress)
+}
+
+func runExpertReviewAttempt(
+	ctx context.Context,
+	provider providers.AgentProvider,
+	request model.Request,
+	progress chan<- model.ProgressEvent,
+) (model.ExpertReview, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, request.Timeout)
+	defer cancel()
+
+	result, err := provider.Run(timeoutCtx, request, progress)
+	if err != nil {
+		return model.ExpertReview{}, err
+	}
+	return parseProviderOutput[model.ExpertReview](provider.ID(), result.Stdout)
 }
 
 func (e *Engine) runManagerProposal(
@@ -695,26 +762,41 @@ func (e *Engine) touch(run *model.RunState) {
 func parseProviderOutput[T any](provider model.ProviderID, raw string) (T, error) {
 	var zero T
 
-	var wrapped struct {
-		Response         json.RawMessage `json:"response"`
-		StructuredOutput json.RawMessage `json:"structured_output"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &wrapped); err == nil {
+	tryWrapped := func(candidate string) (T, bool) {
+		var wrapped struct {
+			Response         json.RawMessage `json:"response"`
+			StructuredOutput json.RawMessage `json:"structured_output"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(candidate)), &wrapped); err != nil {
+			return zero, false
+		}
 		if len(wrapped.StructuredOutput) > 0 {
 			if value, err := decodeDirect[T](string(wrapped.StructuredOutput)); err == nil {
-				return value, nil
+				return value, true
 			}
 		}
 		if len(wrapped.Response) > 0 && wrapped.Response[0] == '"' {
 			var inner string
 			if err := json.Unmarshal(wrapped.Response, &inner); err == nil {
-				return decodeDirect[T](inner)
+				if value, err := decodeDirect[T](inner); err == nil {
+					return value, true
+				}
 			}
 		}
 		if len(wrapped.Response) > 0 {
 			if value, err := decodeDirect[T](string(wrapped.Response)); err == nil {
-				return value, nil
+				return value, true
 			}
+		}
+		return zero, false
+	}
+
+	if value, ok := tryWrapped(raw); ok {
+		return value, nil
+	}
+	if candidate, err := extractTrailingJSONObject(raw); err == nil {
+		if value, ok := tryWrapped(candidate); ok {
+			return value, nil
 		}
 	}
 	if value, err := decodeDirect[T](raw); err == nil {
@@ -729,16 +811,108 @@ func decodeDirect[T any](raw string) (T, error) {
 	if raw == "" {
 		return zero, errors.New("empty output")
 	}
-	start := strings.Index(raw, "{")
-	end := strings.LastIndex(raw, "}")
-	if start >= 0 && end > start {
-		raw = raw[start : end+1]
+	candidate, err := extractTrailingJSONObject(raw)
+	if err == nil {
+		raw = candidate
 	}
 	var value T
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
 		return zero, err
 	}
 	return value, nil
+}
+
+func extractTrailingJSONObject(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("empty output")
+	}
+	bestStart := -1
+	bestEnd := -1
+	for start := 0; start < len(raw); start++ {
+		if raw[start] != '{' {
+			continue
+		}
+		end, ok := findJSONObjectEnd(raw, start)
+		if !ok {
+			continue
+		}
+		candidate := raw[start : end+1]
+		if !json.Valid([]byte(candidate)) {
+			continue
+		}
+		if end > bestEnd || (end == bestEnd && (bestStart == -1 || start < bestStart)) {
+			bestStart = start
+			bestEnd = end
+		}
+	}
+	if bestStart == -1 {
+		return "", errors.New("unable to locate valid JSON object in output")
+	}
+	return raw[bestStart : bestEnd+1], nil
+}
+
+func findJSONObjectEnd(raw string, start int) (int, bool) {
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(raw); i++ {
+		switch c := raw[i]; {
+		case inString:
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+		default:
+			switch c {
+			case '"':
+				inString = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					return i, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+func reviewTimeoutFor(provider model.ProviderID) time.Duration {
+	if provider == model.ProviderClaude {
+		return claudeExpertReviewTimeout
+	}
+	return defaultExpertReviewTimeout
+}
+
+func shouldRetryReview(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timed out") ||
+		strings.Contains(msg, "unable to parse") ||
+		strings.Contains(msg, "signal: killed")
+}
+
+func cloneMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return map[string]string{}
+	}
+	cloned := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func summarizeError(err error) string {

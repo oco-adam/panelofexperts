@@ -124,7 +124,7 @@ func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
 		events: make(chan tea.Msg, 128),
 		setup: SetupState{
 			ExpertCount: 3,
-			MaxRounds:   10,
+			MaxRounds:   5,
 			CWD:         cwd,
 			OutputRoot:  outputRoot,
 			Experts:     []model.ProviderID{model.ProviderClaude, model.ProviderGemini, model.ProviderCodex},

@@ -4,80 +4,87 @@ This document defines the target-state design system for the Panelofexperts term
 
 ## Design Goals
 
-- Define the purpose, scope, and authority of the `Panelofexperts` TUI design system.
-- Document the current UI contract and the target-state rules separately so contributors can distinguish existing constraints from intended standardization.
-- Specify terminal-native design tokens and capability fallbacks, including semantic colors, text emphasis, spacing, borders, density, and non-color status cues.
-- Define layout, workflow, and screen-composition rules around the app's core flow rather than a generic TUI platform.
-- Describe a minimal reusable primitive set and the key workflow-specific patterns the app depends on, including async progress, status reporting, timelines, and markdown content display.
-- Define keyboard interaction, focus handling, selection, feedback, and error behavior for the actual workflow surfaces in the app.
-- Provide accessibility and usability guidance specific to terminal environments and degraded capability tiers.
-- Include implementation mapping guidance so the design system can be adopted incrementally from the current code structure.
+- Make DESIGN.md the canonical design-system contract for the repository's existing TUI, not a generic terminal design document.
+- Replace the current scaffold content with a concise reference optimized for implementation and review.
+- Document the actual screen model in the repo: loading, setup, brief, monitor, and results.
+- Define visual foundations from the current implementation, including layout regions, spacing in character cells, border treatment, semantic typography, color roles, and emphasis hierarchy.
+- Document only the component and primitive patterns the codebase currently uses or clearly implies: header, panel, divider, labeled line, meta badge, provider badge, status/state badge, text input, viewport region, split monitor layout, spinner/loading, and feedback states.
+- Capture the keyboard-first interaction model, including setup navigation, brief submission, discussion start, monitor/results switching, and when interaction is blocked during in-flight work.
+- Map visible UI behavior to actual runtime states and terminology, including RunStatus, AgentState, StopReason, and key CurrentPhase values.
+- Include terminal-specific accessibility and compatibility guidance covering contrast, non-color cues, resize behavior, Unicode border assumptions, and reduced cognitive load.
+- Define a practical definition of done so the final DESIGN.md stops at the right scope and remains usable as a quick reference.
+- Leave clear out-of-scope notes or backlog markers for component types not currently present, instead of standardizing speculative UI.
 
 ## Constraints
 
-- Target deliverable is Markdown at `/Users/adamharris/dev/go/panelofexperts/DESIGN.md`.
-- Focus on the repository's TUI app design system, not broader product strategy.
-- Use `Panelofexperts` as the stable project title.
-- Proposal must remain actionable even before repository verification, while explicitly flagging reviewer-supplied assumptions to confirm during execution.
-- Avoid over-specifying speculative components that are not clearly justified by the current app workflow.
+- Do not call any write, edit, or create tool.
+- Use only read-only repository inspection for grounding.
+- The later deliverable must be a Markdown document at /Users/adamharris/dev/go/panelofexperts/DESIGN.md.
+- Keep the document focused on the TUI design system and implementation contract, not broader product planning.
+- Scope the primary document to components and screens that exist in the repository today; future patterns should be clearly marked as out of scope or backlog.
+- Separate current-state rules, target-state guidance, and illustrative examples so contributors can tell what is normative.
+- Keep the final document intentionally concise, roughly quick-reference sized rather than wiki sized.
+- Treat terminal capability assumptions as part of the contract because the current UI already depends on alt-screen rendering, mouse mode enablement, Lip Gloss borders, and color semantics.
 
-## 1. Reframe the document as a governing spec with three layers
+## Replace the Scaffold With a Code-Anchored Contract
 
-Structure `DESIGN.md` into `Current UI contract`, `Target-state rules`, and `Implementation mapping`. This resolves the current-vs-target ambiguity and lets the document govern immediate work without pretending the full system already exists in code.
+Rewrite DESIGN.md as a replacement for the current generic scaffold. Open with a short contract that defines the file as canonical, explains the difference between current-state rules, target-state guidance, and examples, and states that repo reality wins over generic TUI conventions.
 
-## 2. Anchor scope to the app's core workflow
+## Document the Actual Screen Graph First
 
-Center the document on the reviewer-reported workflow surfaces: setup, manager brief, discussion monitoring, and final results. Define the design system around this shell and these flows first, instead of treating the app like a general-purpose TUI framework.
+Base the document on the five screens already present in internal/ui/model.go: loading, setup, brief, monitor, and results. For each screen, capture purpose, dominant information hierarchy, primary actions, and transition triggers so the design system mirrors the current app instead of imagined future surfaces.
 
-## 3. Define terminal constraints and a capability matrix
+## Define Terminal Foundations From Existing Behavior
 
-Add an explicit support matrix covering color capability tiers, Unicode versus ASCII border fallbacks, narrow-width behavior, and non-color semantic cues. Make fallback behavior normative so contributors know how design decisions degrade across terminal environments.
+Write a foundations section grounded in the current stack: alt-screen is the normal presentation mode, mouse mode is enabled but should be treated as optional enhancement because keyboard handlers drive interaction, rounded borders and Unicode dividers are expected, and resize behavior relies on flexible viewport widths rather than bespoke responsive layouts.
 
-## 4. Specify a minimal primitive set for the normative core
+## Translate Hardcoded Styles Into Semantic Rules
 
-Reduce the core component catalog to primitives that are likely to matter immediately: app shell, header, bordered panel, viewport/content region, form field, text input, status row, timeline entry, banner/message, loading state, empty/error states, and markdown content surface. Move speculative components into a future appendix or `only if introduced` section.
+Convert the current Lip Gloss styling into semantic design language: title treatment, subtitle treatment, panel chrome, divider semantics, label/value pairs, muted helper text, focus emphasis, and success/warning/error/info roles. Prefer semantic color-role naming over freezing every numeric palette value, while still noting the current palette as implementation context.
 
-## 5. Document workflow-specific states and interaction patterns
+## Narrow the Component Catalog to Real Primitives
 
-Expand beyond generic navigation to cover async orchestration, waiting summaries, progress updates, status transitions, recoverable errors, retry affordances, and result presentation. Define keyboard behavior, focus restoration, and feedback timing in the context of these workflow states.
+Standardize only the primitives that exist now or are directly implied by the code: header block, bordered panel, section divider, labeled line, meta badge, provider badge, run/agent status badge, text input, scrollable viewport, split live-activity layout, and feedback states such as loading, waiting, error, empty, and complete. Explicitly mark tables, dialogs, generalized alerts, and richer form systems as out of scope unless implementation introduces them later.
 
-## 6. Define tokens with implementation-minded semantics
+## Add a State and Interaction Matrix
 
-Keep token guidance semantic rather than palette-first, but tie it to realistic TUI usage: background, panel surface, border, body text, muted text, focus, selection, success, warning, error, info, disabled, and emphasis rules. Include spacing, border, and density conventions that work in compact terminal layouts and explicitly describe monochrome or low-color fallbacks.
+Create a compact matrix mapping Screen, RunStatus, AgentState, StopReason, and major CurrentPhase values such as setup, manager_brief, brief_ready, manager_initial_proposal, expert_reviews, manager_merge, writing_deliverable, and finalized to visible UI treatment and allowed user actions. This gives implementation and review a concrete reference for focus, navigation, and state presentation.
 
-## 7. Add code-level adoption guidance
+## Capture Keyboard-First Usage Per Screen
 
-Include a dedicated implementation-mapping section describing where shared styles, tokens, and reusable primitives should land once introduced, how inline styles should be consolidated, and when logic should remain in the current screen/model structure versus when a primitive should be extracted. This should give contributors an incremental adoption path rather than a big-bang rewrite mandate.
+Document the real bindings and behavior patterns already encoded in the UI: setup movement and value adjustment, enter-to-create-run, enter-to-message-manager, ctrl+s to start discussion, r to switch from monitor to results when available, m to return to monitor, and q/ctrl+c to quit. Note where typing is allowed, when inputs blur or focus, and when in-flight work suppresses actions.
 
-## 8. Include concrete examples tied to the actual shell
+## Add Accessibility, Copy, and Cognitive-Load Rules
 
-Use a small number of Markdown-native diagrams and examples for app shell anatomy, panel composition, timeline/status rendering, and keyboard conventions. Examples should clarify the core workflow surfaces rather than showcase a broad library of hypothetical widgets.
+Finish with terminal-specific accessibility guidance: meaningful state changes must not rely on color alone, labels should stay terse and scan-friendly, helper copy should explain the next action, empty and waiting states should be explicit, and dense screens should preserve clear grouping through spacing and borders rather than ornamental styling.
 
-## 9. Finish with review and change-control criteria
+## Set Definition of Done and Backlog Rules
 
-End the document with a checklist for new screens and feature work: capability fallback coverage, focus visibility, non-color status cues, consistent primitives, and whether a new UI need belongs in the normative core or only in an appendix. Also define how deviations from the design system should be documented.
+Define the stopping condition for the drafting pass: every existing screen and shared primitive in internal/ui/model.go has a corresponding rule or explicit exclusion, every visible lifecycle state has a documented presentation rule, the document stays concise enough to scan quickly, and any future-only patterns are listed in a short backlog section instead of expanded into full standards.
 
 ## Risks
 
-- The architecture review introduces repo-specific assumptions that still need verification during execution; if those assumptions are wrong, some scope decisions may need adjustment.
-- If `DESIGN.md` is still written too aspirationally, it will not govern near-term implementation in a codebase that currently lacks a theme or component layer.
-- If the document includes too many speculative components, maintenance cost will rise and contributors may ignore the normative core.
-- If the capability matrix is vague, terminal fallback behavior will remain inconsistent across environments.
-- If implementation mapping is underspecified, the design system may read clearly but fail to influence actual code structure.
+- If DESIGN.md drifts back into generic TUI advice, it will duplicate the current scaffold problem and fail to govern implementation.
+- If the component catalog expands beyond what the repo currently renders, the document will become misleading and harder to maintain.
+- If current-state rules and target-state guidance are mixed without labels, contributors will not know what is binding today.
+- If semantic roles are defined without acknowledging current terminal assumptions, future changes may break borders, color fallback, or resize behavior accidentally.
+- If the document becomes too long, it will function as shelf-ware instead of a reviewable implementation reference.
+- Because style ownership is still centralized in internal/ui/model.go, the design system may drift unless the document explicitly calls out update triggers for new screens, states, or shared primitives.
 
 ## Consensus Notes
 
-- Accepted: narrow the proposal around the app's reported workflow rather than a generic TUI platform.
-- Accepted: split the document into current contract, target-state rules, and implementation mapping to avoid immediate drift.
-- Accepted: reduce the normative component core to a minimal primitive set and push speculative widgets out of the core.
-- Accepted: add a terminal capability matrix and make degraded behavior explicit.
-- Accepted: strengthen implementation mapping so contributors know how the design system lands in code.
-- Rejected as too strong in its current form: treating the review's repository description as fully verified fact. The revised plan uses it as a working assumption to confirm during execution, not as already-inspected truth.
-- Risk/QA review produced no actionable concerns or recommendations, so no proposal changes were justified in this iteration.
+- Accepted the execution review's main criticism that the previous proposal was too generic and needed real repo grounding before it could be trusted.
+- Accepted the recommendation to scope the document ruthlessly to components and screens that actually exist in the repository today.
+- Accepted the need for a concrete definition of done so the drafting pass has a natural stopping point and does not balloon into a wiki.
+- Accepted the recommendation to resolve the previously blocking questions about framework, terminal assumptions, and current-vs-aspirational stance during planning rather than after drafting begins.
+- Accepted the idea of keeping the final document quick-reference sized instead of treating every possible TUI pattern as first-class.
+- Rejected treating broad component categories like tables, dialogs, and generalized alert systems as current standards because the inspected UI does not justify them.
+- Rejected a formal two-deliverable split for this task because the request is for a single canonical DESIGN.md; a short backlog or out-of-scope section is sufficient.
+- Rejected staying framework-agnostic now that the repo has been inspected; Bubble Tea, Bubbles, and Lip Gloss should be named where they materially affect the contract.
+- Risk/QA review produced no actionable concerns or blocking risks, so the proposal remains unchanged in substance.
 
 ## Open Questions
 
-- Should the canonical document be explicitly authoritative for current behavior first, with target-state guidance as a secondary layer, or should both layers carry equal weight?
-- What terminal capability baseline should be treated as the primary supported environment: full ANSI color with Unicode, reduced color, or a broader fallback-first stance?
-- How much of the reviewer-reported current workflow architecture should be treated as stable enough to encode directly before execution-time verification?
-- Should Markdown examples include representative screen mockups for setup, monitoring, and results, or stay limited to anatomy and state snippets?
+- Should the final document merely record the current centralized style ownership in internal/ui/model.go, or should it also prescribe a future extraction seam for shared design primitives?
+- Should DESIGN.md include the current numeric Lip Gloss color values in an appendix, or keep the canonical guidance strictly semantic and treat the numeric palette as implementation detail?
+- Should narrow-terminal fallback behavior be specified now as a target-state guideline, given the current implementation mostly scales widths rather than switching to a distinct single-column layout?

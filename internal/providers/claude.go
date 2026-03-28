@@ -66,6 +66,9 @@ func (p *ClaudeProvider) Run(ctx context.Context, request model.Request, progres
 		"--output-format", "json",
 		"--json-schema", request.JSONSchema,
 	}
+	if request.Role == model.RoleExpert {
+		args = append(args, "--effort", "low")
+	}
 	if request.Metadata["workspace_access"] == "none" {
 		execCWD = os.TempDir()
 	} else {

@@ -79,6 +79,7 @@ func buildBriefPrompt(run model.RunState, userMessage string) string {
 Return only JSON for a planning brief.
 
 Stay in planning mode. Do not inspect files or edit anything during this step.
+Do not attempt to exit planning mode or call any write/edit/create tool.
 Use the latest user request and any existing brief context to set:
 - project_title
 - intent_summary
@@ -108,6 +109,7 @@ func buildInitialProposalPrompt(run model.RunState) string {
 Return only JSON for an initial planning proposal.
 
 Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Do not attempt to exit planning mode or call any write/edit/create tool.
 Produce a concrete proposal that is specific enough for expert review.
 
 Brief: %s
@@ -121,6 +123,7 @@ func buildExpertReviewPrompt(run model.RunState, proposal model.Proposal, expert
 Return only JSON for an expert review.
 
 Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Do not attempt to exit planning mode or call any write/edit/create tool.
 Your review lens: %s
 Review the current proposal critically but constructively. Focus on your lens and flag obvious high-risk issues.
 
@@ -134,6 +137,7 @@ func buildMergePrompt(run model.RunState, current model.Proposal, review model.E
 Return only JSON for an updated planning proposal.
 
 Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Do not attempt to exit planning mode or call any write/edit/create tool.
 Consider exactly one expert review at a time. Incorporate useful feedback, reject weak feedback, and keep the proposal coherent.
 If the review does not justify a change, you may return the proposal unchanged. Set converged to true only when the proposal is materially complete and stable.
 

@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -175,6 +177,12 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 	if len(run.Rounds) != 1 {
 		t.Fatalf("expected one completed round, got %d", len(run.Rounds))
 	}
+	if run.AgentStatuses["expert-1"].State != model.AgentStateDone {
+		t.Fatalf("expected expert-1 to be done after merge, got %s", run.AgentStatuses["expert-1"].State)
+	}
+	if run.AgentStatuses["expert-2"].State != model.AgentStateDone {
+		t.Fatalf("expected expert-2 to be done after merge, got %s", run.AgentStatuses["expert-2"].State)
+	}
 
 	for _, rel := range []string{
 		"brief.json",
@@ -304,6 +312,165 @@ func TestEngineWritesDocumentDeliverableToTargetFile(t *testing.T) {
 	}
 }
 
+func TestEngineNewRunDefaultsMaxRoundsToFive(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := NewEngine(
+		fakeProvider{id: model.ProviderCodex, run: func(request model.Request) (string, error) { return "{}", nil }},
+	)
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderCodex, model.ProviderCodex},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+	if run.MaxRounds != 5 {
+		t.Fatalf("expected default max rounds to be 5, got %d", run.MaxRounds)
+	}
+}
+
+func TestRunDiscussionPublishesCompletedExpertStateBeforeAllReviewsFinish(t *testing.T) {
+	tempDir := t.TempDir()
+	releaseSlowReview := make(chan struct{})
+	sawIntermediate := false
+
+	handler := func(request model.Request) (string, error) {
+		switch request.OutputKind {
+		case "brief":
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Panel Test Project",
+				IntentSummary:  "Build the planning workflow.",
+				TaskKind:       model.TaskKindPlan,
+				TargetFilePath: "",
+				Goals:          []string{"Plan the app"},
+				Constraints:    []string{"Read-only"},
+				ReadyToStart:   true,
+				OpenQuestions:  []string{},
+				ManagerNotes:   "Ready for expert review.",
+			}), nil
+		case "review":
+			if request.AgentID == "expert-2" {
+				<-releaseSlowReview
+			}
+			return mustMarshal(t, model.ExpertReview{
+				Lens:            request.Lens,
+				Summary:         fmt.Sprintf("%s review complete", request.AgentID),
+				Strengths:       []string{"Clear structure"},
+				Concerns:        []string{},
+				Recommendations: []string{},
+				BlockingRisks:   []string{},
+				RequiresChanges: false,
+			}), nil
+		case "proposal":
+			return mustMarshal(t, model.Proposal{
+				Title:               "Stable proposal",
+				Context:             "Planning context.",
+				Goals:               []string{"Plan the app"},
+				Constraints:         []string{"Read-only"},
+				RecommendedPlan:     []model.PlanItem{{Title: "Ship", Details: "Implement the approved plan."}},
+				Risks:               []string{},
+				OpenQuestions:       []string{},
+				ConsensusNotes:      []string{"Panel converged"},
+				DeliverablePath:     "",
+				DeliverableMarkdown: "",
+				Converged:           false,
+				ChangeSummary:       fmt.Sprintf("manager version %d", request.Version),
+			}), nil
+		default:
+			t.Fatalf("unexpected output kind %q", request.OutputKind)
+			return "", nil
+		}
+	}
+
+	engine := NewEngine(
+		fakeProvider{id: model.ProviderCodex, run: handler},
+		fakeProvider{id: model.ProviderClaude, run: handler},
+	)
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderCodex, model.ProviderClaude},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+	run, err = engine.UpdateBrief(context.Background(), run, "Build the app", nil)
+	if err != nil {
+		t.Fatalf("update brief: %v", err)
+	}
+
+	_, err = engine.RunDiscussion(context.Background(), run, func(snapshot model.RunState) {
+		fast := snapshot.AgentStatuses["expert-1"]
+		slow := snapshot.AgentStatuses["expert-2"]
+		if !sawIntermediate && fast.State == model.AgentStateDone && slow.State == model.AgentStateRunning {
+			sawIntermediate = true
+			close(releaseSlowReview)
+		}
+	})
+	if err != nil {
+		t.Fatalf("run discussion: %v", err)
+	}
+	if !sawIntermediate {
+		close(releaseSlowReview)
+		t.Fatal("expected an intermediate snapshot with one expert done while another review was still running")
+	}
+}
+
+func TestRunExpertReviewRetriesWithoutWorkspaceAccess(t *testing.T) {
+	attempts := []model.Request{}
+	provider := fakeProvider{
+		id: model.ProviderClaude,
+		run: func(request model.Request) (string, error) {
+			attempts = append(attempts, request)
+			if len(attempts) == 1 {
+				return "", errors.New("claude timed out after 5m0s")
+			}
+			if request.Metadata["workspace_access"] != "none" {
+				t.Fatalf("expected retry to disable workspace access, got metadata=%v", request.Metadata)
+			}
+			if !strings.Contains(request.Prompt, "Retry mode: do not inspect the repository or use tools.") {
+				t.Fatalf("expected retry prompt to include fallback instruction, got:\n%s", request.Prompt)
+			}
+			return mustMarshal(t, model.ExpertReview{
+				Lens:            model.LensArchitecture,
+				Summary:         "Recovered on retry.",
+				Strengths:       []string{},
+				Concerns:        []string{},
+				Recommendations: []string{},
+				BlockingRisks:   []string{},
+				RequiresChanges: false,
+			}), nil
+		},
+	}
+
+	engine := NewEngine(provider)
+	review, err := engine.runExpertReview(context.Background(), provider, model.Request{
+		RunID:      "run-1",
+		Round:      1,
+		AgentID:    "expert-1",
+		Role:       model.RoleExpert,
+		Prompt:     "Review the proposal",
+		JSONSchema: reviewSchema,
+		OutputKind: "review",
+		Timeout:    time.Minute,
+	}, make(chan model.ProgressEvent, 8))
+	if err != nil {
+		t.Fatalf("run expert review: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("expected two attempts, got %d", len(attempts))
+	}
+	if review.Summary != "Recovered on retry." {
+		t.Fatalf("expected retry review to be returned, got %+v", review)
+	}
+}
+
 func TestParseProviderOutputSupportsWrappedProviderFormats(t *testing.T) {
 	type payload struct {
 		OK bool `json:"ok"`
@@ -325,6 +492,36 @@ func TestParseProviderOutputSupportsWrappedProviderFormats(t *testing.T) {
 	}
 	if !gotGemini.OK {
 		t.Fatal("expected gemini wrapper to parse response content")
+	}
+
+	noisyGeminiRaw := strings.TrimSpace(`
+Loaded cached credentials.
+Loading extension: firebase
+Capabilities: {
+  "logging": {}
+}
+{
+  "session_id": "abc",
+  "response": "{\"ok\":true}",
+  "stats": {
+    "models": {}
+  }
+}`)
+	gotNoisyGemini, err := parseProviderOutput[payload](model.ProviderGemini, noisyGeminiRaw)
+	if err != nil {
+		t.Fatalf("parse noisy gemini wrapper: %v", err)
+	}
+	if !gotNoisyGemini.OK {
+		t.Fatal("expected noisy gemini wrapper to parse response content")
+	}
+}
+
+func TestReviewTimeoutForExpertsUsesConfiguredDurations(t *testing.T) {
+	if got := reviewTimeoutFor(model.ProviderClaude); got != claudeExpertReviewTimeout {
+		t.Fatalf("expected claude timeout %s, got %s", claudeExpertReviewTimeout, got)
+	}
+	if got := reviewTimeoutFor(model.ProviderCodex); got != defaultExpertReviewTimeout {
+		t.Fatalf("expected default timeout %s for codex, got %s", defaultExpertReviewTimeout, got)
 	}
 }
 
