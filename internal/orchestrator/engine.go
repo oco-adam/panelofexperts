@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -212,6 +213,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		notify()
 		return run, err
 	}
+	brief = normalizeBrief(brief, inferTaskHint(run, userMessage))
 
 	run.Brief = brief
 	if strings.TrimSpace(brief.ProjectTitle) != "" {
@@ -383,7 +385,33 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 finalize:
 	run.StopReason = stopReason
 	run.FinalProposal = &proposal
-	run.FinalMarkdown = render.RenderProposalMarkdown(proposal, run)
+	if run.Brief.TaskKind == model.TaskKindDocument {
+		run.CurrentPhase = "writing_deliverable"
+		run.DeliverablePath = proposal.DeliverablePath
+		if strings.TrimSpace(run.DeliverablePath) == "" {
+			run.DeliverablePath = run.Brief.TargetFilePath
+		}
+		run.FinalMarkdown = render.RenderDeliverableMarkdown(run, proposal)
+		if err := writeDeliverableFile(run.DeliverablePath, run.FinalMarkdown); err != nil {
+			run.Status = model.RunStatusFailed
+			run.CurrentPhase = "deliverable_write_failed"
+			run.StopReason = model.StopReasonManagerFailed
+			run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateError, "deliverable_write_failed", summarizeError(err), e.now())
+			e.touch(&run)
+			_ = store.SaveState(run)
+			notify()
+			return run, err
+		}
+		_ = store.SaveJSON("deliverable.json", model.DocumentDraft{
+			Path:     run.DeliverablePath,
+			Markdown: strings.TrimSpace(run.FinalMarkdown),
+		})
+		_ = store.SaveText("deliverable.md", run.FinalMarkdown)
+		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateDone, "deliverable_written", "Manager finalized the deliverable", e.now())
+		e.appendTimeline(&run, run.CurrentRound, run.Manager.ID, fmt.Sprintf("Wrote deliverable to %s", run.DeliverablePath))
+	} else {
+		run.FinalMarkdown = finalMarkdown(run, proposal)
+	}
 	run.FinalMarkdownPath = filepath.Join(run.OutputDir, "final.md")
 	run.CurrentPhase = "finalized"
 	run.WaitingSummary = ""
@@ -538,6 +566,7 @@ func (e *Engine) runManagerProposal(
 	if err != nil {
 		return model.Proposal{}, version, err
 	}
+	proposal = normalizeProposal(proposal, run.Brief, run.CWD)
 
 	filename := fmt.Sprintf("proposal-v%03d", version)
 	_ = store.SaveJSON(filename+".json", proposal)
@@ -598,7 +627,7 @@ func deriveWaitingSummary(run model.RunState) string {
 	active := []string{}
 	waitingExperts := []string{}
 	waitingManager := false
-	for _, status := range run.AgentStatuses {
+	for _, status := range orderedAgentStatuses(run) {
 		switch status.State {
 		case model.AgentStateQueued, model.AgentStateStarting, model.AgentStateRunning, model.AgentStateParsing:
 			active = append(active, status.Name)
@@ -623,6 +652,19 @@ func deriveWaitingSummary(run model.RunState) string {
 	default:
 		return run.WaitingSummary
 	}
+}
+
+func orderedAgentStatuses(run model.RunState) []model.AgentStatus {
+	statuses := make([]model.AgentStatus, 0, len(run.AgentStatuses))
+	if status, ok := run.AgentStatuses[run.Manager.ID]; ok {
+		statuses = append(statuses, status)
+	}
+	for _, expert := range run.Experts {
+		if status, ok := run.AgentStatuses[expert.ID]; ok {
+			statuses = append(statuses, status)
+		}
+	}
+	return statuses
 }
 
 func formatTimelineText(event model.ProgressEvent) string {
@@ -717,6 +759,82 @@ func reviewsByLensOrAgent(agent model.AgentConfig, reviews []model.ExpertReview)
 		}
 	}
 	return model.ExpertReview{}, false
+}
+
+func normalizeBrief(brief model.Brief, hint taskHint) model.Brief {
+	brief.Goals = ensureStringSlice(brief.Goals)
+	brief.Constraints = ensureStringSlice(brief.Constraints)
+	brief.OpenQuestions = ensureStringSlice(brief.OpenQuestions)
+	if brief.TaskKind == "" {
+		brief.TaskKind = hint.Kind
+	}
+	if brief.TaskKind == "" {
+		brief.TaskKind = model.TaskKindPlan
+	}
+	if strings.TrimSpace(brief.TargetFilePath) == "" {
+		brief.TargetFilePath = hint.TargetFilePath
+	}
+	if brief.TargetFilePath != "" {
+		brief.TaskKind = model.TaskKindDocument
+	}
+	if brief.TaskKind != model.TaskKindDocument {
+		brief.TargetFilePath = ""
+	}
+	return brief
+}
+
+func normalizeProposal(proposal model.Proposal, brief model.Brief, cwd string) model.Proposal {
+	proposal.Goals = ensureStringSlice(proposal.Goals)
+	proposal.Constraints = ensureStringSlice(proposal.Constraints)
+	proposal.RecommendedPlan = ensurePlanItems(proposal.RecommendedPlan)
+	proposal.Risks = ensureStringSlice(proposal.Risks)
+	proposal.OpenQuestions = ensureStringSlice(proposal.OpenQuestions)
+	proposal.ConsensusNotes = ensureStringSlice(proposal.ConsensusNotes)
+	proposal.DeliverablePath = strings.TrimSpace(proposal.DeliverablePath)
+	if proposal.DeliverablePath == "" && brief.TaskKind == model.TaskKindDocument {
+		proposal.DeliverablePath = brief.TargetFilePath
+	}
+	if proposal.DeliverablePath != "" && !filepath.IsAbs(proposal.DeliverablePath) {
+		proposal.DeliverablePath = filepath.Join(cwd, proposal.DeliverablePath)
+	}
+	if proposal.DeliverablePath != "" {
+		proposal.DeliverablePath = filepath.Clean(proposal.DeliverablePath)
+	}
+	proposal.DeliverableMarkdown = strings.TrimSpace(proposal.DeliverableMarkdown)
+	return proposal
+}
+
+func ensureStringSlice(items []string) []string {
+	if len(items) == 0 {
+		return []string{}
+	}
+	return items
+}
+
+func ensurePlanItems(items []model.PlanItem) []model.PlanItem {
+	if len(items) == 0 {
+		return []model.PlanItem{}
+	}
+	return items
+}
+
+func finalMarkdown(run model.RunState, proposal model.Proposal) string {
+	if proposal.DeliverablePath != "" && strings.TrimSpace(proposal.DeliverableMarkdown) != "" {
+		return proposal.DeliverableMarkdown + "\n"
+	}
+	return render.RenderProposalMarkdown(proposal, run)
+}
+
+func writeDeliverableFile(path, content string) error {
+	path = strings.TrimSpace(path)
+	content = strings.TrimSpace(content)
+	if path == "" || content == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content+"\n"), 0o644)
 }
 
 func slugify(input string) string {

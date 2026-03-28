@@ -3,18 +3,24 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"panelofexperts/internal/model"
 )
 
+var markdownPathPattern = regexp.MustCompile(`(?i)([A-Za-z0-9_./-]+\.(?:md|markdown))`)
+
 const briefSchema = `{
   "type": "object",
   "additionalProperties": false,
-  "required": ["project_title", "intent_summary", "goals", "constraints", "ready_to_start", "open_questions", "manager_notes"],
+  "required": ["project_title", "intent_summary", "task_kind", "target_file_path", "goals", "constraints", "ready_to_start", "open_questions", "manager_notes"],
   "properties": {
     "project_title": {"type": "string"},
     "intent_summary": {"type": "string"},
+    "task_kind": {"type": "string"},
+    "target_file_path": {"type": "string"},
     "goals": {"type": "array", "items": {"type": "string"}},
     "constraints": {"type": "array", "items": {"type": "string"}},
     "ready_to_start": {"type": "boolean"},
@@ -68,6 +74,7 @@ const reviewSchema = `{
 }`
 
 func buildBriefPrompt(run model.RunState, userMessage string) string {
+	hint := inferTaskHint(run, userMessage)
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for a planning brief.
 
@@ -75,6 +82,8 @@ Stay in planning mode. Do not inspect files or edit anything during this step.
 Use the latest user request and any existing brief context to set:
 - project_title
 - intent_summary
+- task_kind
+- target_file_path
 - goals
 - constraints
 - ready_to_start
@@ -82,12 +91,16 @@ Use the latest user request and any existing brief context to set:
 - manager_notes
 
 Keep the title stable once it is clear. Set ready_to_start to true only when the brief is actionable enough for expert review.
+If the request clearly targets a markdown file deliverable, set task_kind to "document" and target_file_path to that file.
+Otherwise set task_kind to "plan" and target_file_path to an empty string.
 
 Target repository path for the later discussion: %s
+Task kind hint from the app: %s
+Target file hint from the app: %s
 Existing brief: %s
 Previous manager turns: %s
 Latest user request: %s
-`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(run.ManagerTurns), strings.TrimSpace(userMessage)))
+`, run.CWD, hint.Kind, hint.TargetFilePath, mustCompactJSON(run.Brief), mustCompactJSON(run.ManagerTurns), strings.TrimSpace(userMessage)))
 }
 
 func buildInitialProposalPrompt(run model.RunState) string {
@@ -140,6 +153,32 @@ func mustJSON(value any) string {
 		return "{}"
 	}
 	return string(data)
+}
+
+type taskHint struct {
+	Kind           model.TaskKind
+	TargetFilePath string
+}
+
+func inferTaskHint(run model.RunState, userMessage string) taskHint {
+	if run.Brief.TaskKind == model.TaskKindDocument && strings.TrimSpace(run.Brief.TargetFilePath) != "" {
+		return taskHint{
+			Kind:           model.TaskKindDocument,
+			TargetFilePath: run.Brief.TargetFilePath,
+		}
+	}
+
+	match := markdownPathPattern.FindString(strings.TrimSpace(userMessage))
+	if match == "" {
+		return taskHint{Kind: model.TaskKindPlan}
+	}
+	if !filepath.IsAbs(match) {
+		match = filepath.Join(run.CWD, match)
+	}
+	return taskHint{
+		Kind:           model.TaskKindDocument,
+		TargetFilePath: filepath.Clean(match),
+	}
 }
 
 func mustCompactJSON(value any) string {

@@ -23,10 +23,11 @@ func TestRenderProposalMarkdownIncludesCoreSections(t *testing.T) {
 		RecommendedPlan: []model.PlanItem{
 			{Title: "Step 1", Details: "Do the first thing."},
 		},
-		Risks:          []string{"Risk A"},
-		OpenQuestions:  []string{"Question A"},
-		ConsensusNotes: []string{"Consensus A"},
-		ChangeSummary:  "No major changes remain.",
+		Risks:           []string{"Risk A"},
+		OpenQuestions:   []string{"Question A"},
+		ConsensusNotes:  []string{"Consensus A"},
+		DeliverablePath: "/tmp/DESIGN.md",
+		ChangeSummary:   "No major changes remain.",
 	}
 
 	output := RenderProposalMarkdown(proposal, run)
@@ -36,6 +37,8 @@ func TestRenderProposalMarkdownIncludesCoreSections(t *testing.T) {
 		"## Context",
 		"## Recommended Plan",
 		"## Risks",
+		"## Deliverable",
+		"/tmp/DESIGN.md",
 		"## Metadata",
 		"run-123",
 	} {
@@ -53,5 +56,45 @@ func TestProposalHashStable(t *testing.T) {
 	}
 	if got, want := ProposalHash(proposal), ProposalHash(proposal); got != want {
 		t.Fatalf("expected stable hash, got %q want %q", got, want)
+	}
+}
+
+func TestRenderDeliverableMarkdownBuildsDocumentContent(t *testing.T) {
+	run := model.RunState{
+		ProjectTitle: "Panel of Experts",
+		Brief: model.Brief{
+			TaskKind:       model.TaskKindDocument,
+			TargetFilePath: "/tmp/DESIGN.md",
+			IntentSummary:  "Create the TUI app design system document.",
+		},
+	}
+	proposal := model.Proposal{
+		Context: "Planning-only proposal for `/tmp/DESIGN.md`.",
+		Goals:   []string{"Define semantic tokens", "Define interaction states"},
+		Constraints: []string{
+			"Stay in planning mode for this step; do not inspect repository files or edit files yet.",
+			"Keep the document semantic rather than framework-API-driven.",
+		},
+		RecommendedPlan: []model.PlanItem{
+			{Title: "Document Authority", Details: "Declare the file as the canonical design-system reference."},
+		},
+		ConsensusNotes: []string{"Use a target-state design-system approach."},
+	}
+
+	output := RenderDeliverableMarkdown(run, proposal)
+
+	for _, expected := range []string{
+		"# Panel of Experts TUI Design System",
+		"## Design Goals",
+		"## Constraints",
+		"## Document Authority",
+		"## Consensus Notes",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected deliverable markdown to contain %q, got:\n%s", expected, output)
+		}
+	}
+	if strings.Contains(output, "Stay in planning mode") {
+		t.Fatalf("expected planning-only text to be removed, got:\n%s", output)
 	}
 }

@@ -92,13 +92,14 @@ func TestModelScreenTransitionsAndStatusContent(t *testing.T) {
 	run.FinalProposal = &model.Proposal{Title: "Final proposal"}
 	run.FinalMarkdown = "# Final proposal\n"
 	run.FinalMarkdownPath = "/tmp/final.md"
+	run.DeliverablePath = "/tmp/DESIGN.md"
 	run.Status = model.RunStatusComplete
 	updated, _ = m.Update(discussionDoneMsg{Run: run})
 	m = updated.(Model)
 	if m.screen != screenResults {
 		t.Fatalf("expected results screen, got %v", m.screen)
 	}
-	if !strings.Contains(m.View().Content, "# Final proposal") {
+	if !strings.Contains(m.View().Content, "# Final proposal") || !strings.Contains(m.View().Content, "/tmp/DESIGN.md") {
 		t.Fatalf("expected final markdown to render in results view, got:\n%s", m.View().Content)
 	}
 }

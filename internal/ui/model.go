@@ -518,11 +518,16 @@ func (m Model) viewResults() string {
 		fmt.Sprintf("Run: %s", m.run.ID),
 		fmt.Sprintf("Stop reason: %s", m.run.StopReason),
 		fmt.Sprintf("Final markdown: %s", m.run.FinalMarkdownPath),
+	}
+	if strings.TrimSpace(m.run.DeliverablePath) != "" {
+		lines = append(lines, fmt.Sprintf("Deliverable file: %s", m.run.DeliverablePath))
+	}
+	lines = append(lines,
 		"",
-		m.panelStyle.Width(m.width - 4).Render(m.resultViewport.View()),
+		m.panelStyle.Width(m.width-4).Render(m.resultViewport.View()),
 		"",
 		m.mutedStyle.Render("Press m to return to the monitor, q to quit."),
-	}
+	)
 	if m.err != "" {
 		lines = append(lines, "", m.errorStyle.Render(m.err))
 	}

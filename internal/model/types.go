@@ -49,6 +49,13 @@ func DefaultLenses(count int) []ExpertLens {
 	}
 }
 
+type TaskKind string
+
+const (
+	TaskKindPlan     TaskKind = "plan"
+	TaskKindDocument TaskKind = "document"
+)
+
 type AgentState string
 
 const (
@@ -172,13 +179,15 @@ type ManagerTurn struct {
 }
 
 type Brief struct {
-	ProjectTitle  string   `json:"project_title"`
-	IntentSummary string   `json:"intent_summary"`
-	Goals         []string `json:"goals"`
-	Constraints   []string `json:"constraints"`
-	ReadyToStart  bool     `json:"ready_to_start"`
-	OpenQuestions []string `json:"open_questions"`
-	ManagerNotes  string   `json:"manager_notes"`
+	ProjectTitle   string   `json:"project_title"`
+	IntentSummary  string   `json:"intent_summary"`
+	TaskKind       TaskKind `json:"task_kind"`
+	TargetFilePath string   `json:"target_file_path"`
+	Goals          []string `json:"goals"`
+	Constraints    []string `json:"constraints"`
+	ReadyToStart   bool     `json:"ready_to_start"`
+	OpenQuestions  []string `json:"open_questions"`
+	ManagerNotes   string   `json:"manager_notes"`
 }
 
 type PlanItem struct {
@@ -187,16 +196,23 @@ type PlanItem struct {
 }
 
 type Proposal struct {
-	Title           string     `json:"title"`
-	Context         string     `json:"context"`
-	Goals           []string   `json:"goals"`
-	Constraints     []string   `json:"constraints"`
-	RecommendedPlan []PlanItem `json:"recommended_plan"`
-	Risks           []string   `json:"risks"`
-	OpenQuestions   []string   `json:"open_questions"`
-	ConsensusNotes  []string   `json:"consensus_notes"`
-	Converged       bool       `json:"converged"`
-	ChangeSummary   string     `json:"change_summary"`
+	Title               string     `json:"title"`
+	Context             string     `json:"context"`
+	Goals               []string   `json:"goals"`
+	Constraints         []string   `json:"constraints"`
+	RecommendedPlan     []PlanItem `json:"recommended_plan"`
+	Risks               []string   `json:"risks"`
+	OpenQuestions       []string   `json:"open_questions"`
+	ConsensusNotes      []string   `json:"consensus_notes"`
+	DeliverablePath     string     `json:"deliverable_path"`
+	DeliverableMarkdown string     `json:"deliverable_markdown"`
+	Converged           bool       `json:"converged"`
+	ChangeSummary       string     `json:"change_summary"`
+}
+
+type DocumentDraft struct {
+	Path     string `json:"path"`
+	Markdown string `json:"markdown"`
 }
 
 type ExpertReview struct {
@@ -240,6 +256,7 @@ type RunState struct {
 	FinalProposal     *Proposal              `json:"final_proposal,omitempty"`
 	FinalMarkdown     string                 `json:"final_markdown,omitempty"`
 	FinalMarkdownPath string                 `json:"final_markdown_path,omitempty"`
+	DeliverablePath   string                 `json:"deliverable_path,omitempty"`
 	StopReason        StopReason             `json:"stop_reason"`
 }
 
@@ -265,6 +282,7 @@ func NewRunState(id, cwd, outputDir string, maxRounds int, manager AgentConfig, 
 		WaitingSummary: "Waiting for the manager brief",
 		Brief: Brief{
 			ProjectTitle:  defaultProjectTitle(cwd),
+			TaskKind:      TaskKindPlan,
 			Goals:         []string{},
 			Constraints:   []string{},
 			OpenQuestions: []string{},
