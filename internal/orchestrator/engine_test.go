@@ -80,7 +80,7 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 				Concerns:        []string{"Minor sequencing tweak"},
 				Recommendations: []string{"Keep status visibility prominent"},
 				BlockingRisks:   []string{},
-				RequiresChanges: request.Lens == model.LensArchitecture,
+				RequiresChanges: request.Round == 1 && request.Lens == model.LensArchitecture,
 			}), nil
 		case "proposal":
 			switch request.Version {
@@ -113,6 +113,21 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 					DeliverableMarkdown: "",
 					Converged:           true,
 					ChangeSummary:       "Merged expert bundle; proposal converged.",
+				}), nil
+			case 3:
+				return mustMarshal(t, model.Proposal{
+					Title:               "Validated proposal",
+					Context:             "Context after follow-up expert validation.",
+					Goals:               []string{"Plan the app"},
+					Constraints:         []string{"Read-only"},
+					RecommendedPlan:     []model.PlanItem{{Title: "Refine", Details: "Add live status board."}},
+					Risks:               []string{"Need deterministic convergence"},
+					OpenQuestions:       []string{},
+					ConsensusNotes:      []string{"Follow-up expert round found no further changes"},
+					DeliverablePath:     "",
+					DeliverableMarkdown: "",
+					Converged:           true,
+					ChangeSummary:       "Follow-up expert validation confirmed convergence.",
 				}), nil
 			default:
 				t.Fatalf("unexpected proposal version %d", request.Version)
@@ -162,8 +177,8 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 	if run.WaitingSummary != "Discussion converged" {
 		t.Fatalf("expected converged waiting summary, got %q", run.WaitingSummary)
 	}
-	if len(run.Rounds) != 1 {
-		t.Fatalf("expected one completed round, got %d", len(run.Rounds))
+	if len(run.Rounds) != 2 {
+		t.Fatalf("expected two completed rounds, got %d", len(run.Rounds))
 	}
 	if run.MergeStrategy != model.MergeStrategyTogether {
 		t.Fatalf("expected default merge strategy to be together, got %s", run.MergeStrategy)
@@ -182,8 +197,11 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 		"brief.md",
 		"proposal-v001.json",
 		"proposal-v002.json",
+		"proposal-v003.json",
 		"reviews/round-1/expert-1.json",
 		"reviews/round-1/expert-2.json",
+		"reviews/round-2/expert-1.json",
+		"reviews/round-2/expert-2.json",
 		"final.md",
 		"state.json",
 	} {
@@ -196,7 +214,7 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read final markdown: %v", err)
 	}
-	if !strings.Contains(string(finalData), "# Merged proposal") {
+	if !strings.Contains(string(finalData), "# Validated proposal") {
 		t.Fatalf("expected final markdown to contain final proposal title, got:\n%s", string(finalData))
 	}
 }

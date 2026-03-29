@@ -421,6 +421,15 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 		notify()
 
 		newHash := render.ProposalHash(proposal)
+		changedAfterExpertFeedback := !allNoChanges && previousHash != newHash
+		if changedAfterExpertFeedback {
+			if round < run.MaxRounds {
+				continue
+			}
+			stopReason = model.StopReasonMaxRounds
+			finalStatus = model.RunStatusComplete
+			goto finalize
+		}
 		switch {
 		case proposal.Converged:
 			stopReason = model.StopReasonConverged
