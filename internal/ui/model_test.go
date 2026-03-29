@@ -259,6 +259,155 @@ func TestBriefQuestionFlowUsesStructuredAnswerPrompt(t *testing.T) {
 	}
 }
 
+func TestBriefQuestionFlowAdvancesLocallyUntilLastAnswer(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		briefStubProvider{id: model.ProviderCodex},
+		briefStubProvider{id: model.ProviderClaude},
+		briefStubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	m.screen = screenBrief
+	m.run = model.NewRunState(
+		"run-questions",
+		tempDir,
+		OutputRoot(tempDir),
+		5,
+		model.MergeStrategyTogether,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{},
+	)
+	m.run.Brief.OpenQuestions = []string{
+		"Should DESIGN.md reflect the current UI or the target state?",
+		"Who is the primary reader of the document?",
+	}
+	m.syncBriefInput()
+	m.refreshRunViews()
+
+	m.input.SetValue("Target state, with current gaps called out.")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+
+	if m.inFlight {
+		t.Fatal("expected the first answer to stay local until the last question is answered")
+	}
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "Manager Question 2 of 2") {
+		t.Fatalf("expected the next question to appear immediately, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Enter sends your answers back to the manager after question 2 of 2.") {
+		t.Fatalf("expected the grouped-question helper copy, got:\n%s", view)
+	}
+
+	m.input.SetValue("Contributors updating the TUI and reviewers checking the contract.")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.inFlight {
+		t.Fatal("expected the final answer to submit the grouped manager-question response")
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case msg := <-m.events:
+			done, ok := msg.(briefDoneMsg)
+			if !ok {
+				continue
+			}
+			if done.Err != nil {
+				t.Fatalf("unexpected grouped brief error: %v", done.Err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for grouped brief submission to finish")
+		}
+	}
+}
+
+func TestBriefQuestionModePrioritizesReplyBeforeBriefSnapshot(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = updated.(Model)
+
+	m.screen = screenBrief
+	m.run = model.NewRunState(
+		"run-priority",
+		tempDir,
+		OutputRoot(tempDir),
+		5,
+		model.MergeStrategyTogether,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{},
+	)
+	m.run.Status = model.RunStatusWaiting
+	m.run.WaitingSummary = "Waiting for the next user action"
+	m.run.RepoGrounding = model.RepoGrounding{
+		Status:  model.RepoGroundingReady,
+		Summary: "Grounding summary with enough detail to compete for vertical space in a short terminal window.",
+		Facts: []model.GroundingFact{
+			{Label: "Key Docs", Value: "DESIGN.md, README.md"},
+			{Label: "Release Tooling", Value: "GitHub Actions"},
+		},
+		Unknowns: []string{
+			"No CLI entrypoint was detected under cmd/.",
+			"No high-signal package manifest was detected at the workspace root.",
+		},
+	}
+	m.run.Brief.OpenQuestions = []string{
+		"Should the migration section explicitly name command-era deletion targets, or keep cleanup guidance high-level and leave file removals to follow-on work?",
+		"Should the final document prescribe a future design-primitives extraction seam?",
+	}
+	m.syncBriefInput()
+	m.refreshRunViews()
+
+	view := stripANSI(m.View().Content)
+	replyIndex := strings.Index(view, "Reply")
+	briefIndex := strings.Index(view, "Brief Snapshot")
+	if replyIndex == -1 {
+		t.Fatalf("expected the reply panel to remain visible, got:\n%s", view)
+	}
+	if briefIndex != -1 && replyIndex > briefIndex {
+		t.Fatalf("expected reply controls to render before the brief snapshot when questions are active, got:\n%s", view)
+	}
+	if height := lipgloss.Height(view); height > m.height {
+		t.Fatalf("expected brief question mode to fit within the window height (%d), got %d\n%s", m.height, height, view)
+	}
+}
+
+func TestBriefSubmissionTextForAnswersIncludesAllResponses(t *testing.T) {
+	submission := briefSubmissionTextForAnswers([]briefAnswer{
+		{
+			Question: "Should the doc describe the target state?",
+			Answer:   "Yes, with drift explicitly called out.",
+		},
+		{
+			Question: "Who is the audience?",
+			Answer:   "Maintainers and reviewers.",
+		},
+	})
+
+	for _, expected := range []string{
+		"The user answered the current manager follow-up questions for the planning brief.",
+		"Question 1: Should the doc describe the target state?",
+		"Answer 1: Yes, with drift explicitly called out.",
+		"Question 2: Who is the audience?",
+		"Answer 2: Maintainers and reviewers.",
+		"Update the brief.",
+	} {
+		if !strings.Contains(submission, expected) {
+			t.Fatalf("expected grouped submission to contain %q, got:\n%s", expected, submission)
+		}
+	}
+}
+
 func TestBriefViewFitsShortWindowAndKeepsReplyVisible(t *testing.T) {
 	tempDir := t.TempDir()
 	engine := orchestrator.NewEngine(

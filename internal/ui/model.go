@@ -56,6 +56,11 @@ type SetupState struct {
 	OutputRoot  string
 }
 
+type briefAnswer struct {
+	Question string
+	Answer   string
+}
+
 type Model struct {
 	engine       *orchestrator.Engine
 	screen       Screen
@@ -76,6 +81,10 @@ type Model struct {
 	timelineView   viewport.Model
 	resultViewport viewport.Model
 	spin           spinner.Model
+
+	briefQuestionQueue      []string
+	briefQuestionAnswers    []briefAnswer
+	briefQuestionSubmitting bool
 
 	theme  theme
 	chrome uiChrome
@@ -167,8 +176,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case briefDoneMsg:
 		m.inFlight = false
+		m.resetBriefQuestionFlow()
 		if msg.Err != nil {
 			m.err = msg.Err.Error()
+			m.syncBriefInput()
+			m.refreshRunViews()
 		} else {
 			m.err = ""
 			m.run = msg.Run
@@ -427,8 +439,13 @@ func (m *Model) updateBrief(msg tea.KeyMsg) tea.Cmd {
 		if m.inFlight || strings.TrimSpace(m.input.Value()) == "" {
 			return nil
 		}
-		message := m.briefSubmissionText(strings.TrimSpace(m.input.Value()))
+		message, advanceQuestion := m.consumeBriefInput(strings.TrimSpace(m.input.Value()))
 		m.input.SetValue("")
+		m.syncBriefInput()
+		m.refreshRunViews()
+		if advanceQuestion || message == "" {
+			return nil
+		}
 		m.err = ""
 		m.inFlight = true
 		go func(run model.RunState, text string) {
@@ -442,6 +459,9 @@ func (m *Model) updateBrief(msg tea.KeyMsg) tea.Cmd {
 		if m.inFlight {
 			return nil
 		}
+		m.resetBriefQuestionFlow()
+		m.syncBriefInput()
+		m.refreshRunViews()
 		m.err = ""
 		m.inFlight = true
 		m.screen = screenMonitor
@@ -521,13 +541,31 @@ func (m Model) viewSetup() string {
 }
 
 func (m Model) viewBrief() string {
+	header := m.briefHeaderBlock()
+	footer := m.briefFooterBlock()
 	briefPanel := m.chrome.panelBlock("Brief Snapshot", m.briefViewport.View(), m.layout.contentWidth, toneInfo)
-	blocks := []string{
-		m.briefHeaderBlock(),
-		m.briefGroundingBlock(),
-		briefPanel,
-		m.briefFooterBlock(),
+	blocks := []string{header}
+	if grounding := m.briefGroundingBlock(); grounding != "" {
+		blocks = append(blocks, grounding)
 	}
+	if m.prioritizeBriefReply() {
+		blocks = append(blocks, footer, briefPanel)
+		view := joinBlocks(blocks...)
+		if lipgloss.Height(view) <= m.height {
+			return view
+		}
+
+		lines := m.briefGroundingLines()
+		for limit := len(lines); limit >= 1; limit-- {
+			view = joinBlocks(header, m.briefGroundingBlockWithLimit(limit), footer)
+			if lipgloss.Height(view) <= m.height {
+				return view
+			}
+		}
+
+		return joinBlocks(header, footer)
+	}
+	blocks = append(blocks, briefPanel, footer)
 	return joinBlocks(blocks...)
 }
 
@@ -659,15 +697,18 @@ func (m Model) briefFooterBlock() string {
 		}, "\n"), m.layout.contentWidth, toneWarning))
 	}
 
+	replyBody := m.input.View()
 	if m.inFlight {
 		blocks = append(blocks, m.chrome.banner("Working", "Manager is updating the brief", toneWarning))
-	} else if _, index, total := m.activeBriefQuestion(); total > 0 {
-		blocks = append(blocks, m.chrome.muted.Render(fmt.Sprintf("Enter submits your answer to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)))
 	} else {
-		blocks = append(blocks, m.chrome.muted.Render("Enter sends the next message to the manager. Press ctrl+s to start the discussion."))
+		replyBody = strings.Join([]string{
+			replyBody,
+			"",
+			m.chrome.muted.Render(m.briefFooterHint()),
+		}, "\n")
 	}
 
-	blocks = append(blocks, m.chrome.panelBlock("Reply", m.input.View(), m.layout.contentWidth, toneFocus))
+	blocks = append(blocks, m.chrome.panelBlock("Reply", replyBody, m.layout.contentWidth, toneFocus))
 	if m.err != "" {
 		blocks = append(blocks, m.chrome.banner("Error", m.err, toneDanger))
 	}
@@ -778,8 +819,25 @@ func (m Model) briefContent() string {
 }
 
 func (m Model) briefGroundingBlock() string {
-	if m.run.ID == "" {
+	return m.briefGroundingBlockWithLimit(0)
+}
+
+func (m Model) briefGroundingBlockWithLimit(limit int) string {
+	lines := m.briefGroundingLines()
+	if len(lines) == 0 {
 		return ""
+	}
+	if limit > 0 && len(lines) > limit {
+		truncated := append([]string{}, lines[:max(1, limit-1)]...)
+		truncated = append(truncated, fmt.Sprintf("... %d more lines", len(lines)-len(truncated)))
+		lines = truncated
+	}
+	return m.chrome.panelBlock("Repo Grounding", strings.Join(lines, "\n"), m.layout.contentWidth, toneSecondary)
+}
+
+func (m Model) briefGroundingLines() []string {
+	if m.run.ID == "" {
+		return nil
 	}
 	lines := []string{}
 	switch m.run.RepoGrounding.Status {
@@ -797,7 +855,7 @@ func (m Model) briefGroundingBlock() string {
 	case model.RepoGroundingFailed:
 		lines = append(lines, emptyFallback(m.run.RepoGrounding.Summary, "Repo grounding failed"))
 	default:
-		return ""
+		return nil
 	}
 	if len(m.run.RepoGrounding.Unknowns) > 0 {
 		lines = append(lines, "", "Unknowns:")
@@ -805,10 +863,15 @@ func (m Model) briefGroundingBlock() string {
 			lines = append(lines, "- "+item)
 		}
 	}
-	return m.chrome.panelBlock("Repo Grounding", strings.Join(lines, "\n"), m.layout.contentWidth, toneSecondary)
+	return lines
 }
 
 func (m *Model) syncBriefInput() {
+	if m.briefQuestionSubmitting {
+		m.input.Placeholder = "Manager is updating the brief"
+		m.input.Prompt = "A> "
+		return
+	}
 	if question, _, _ := m.activeBriefQuestion(); question != "" {
 		m.input.Placeholder = "Answer the current manager question"
 		m.input.Prompt = "A> "
@@ -841,7 +904,7 @@ func (m *Model) syncBriefViewportLayout() {
 	if groundingHeight > 0 {
 		spacing += groundingHeight + 2
 	}
-	m.briefViewport.SetHeight(m.layout.viewportHeight(headerHeight, footerHeight, panelChrome, spacing, 1))
+	m.briefViewport.SetHeight(m.layout.viewportHeight(headerHeight, footerHeight, panelChrome, spacing, 0))
 	m.briefViewport.SetContent(m.briefContent())
 }
 
@@ -925,11 +988,19 @@ func (m Model) currentFailureSummary() string {
 }
 
 func (m Model) activeBriefQuestion() (string, int, int) {
-	for i, question := range m.run.Brief.OpenQuestions {
-		question = strings.TrimSpace(question)
-		if question != "" {
-			return question, i, len(m.run.Brief.OpenQuestions)
+	if len(m.briefQuestionQueue) > 0 {
+		if m.briefQuestionSubmitting {
+			return "", 0, len(m.briefQuestionQueue)
 		}
+		index := len(m.briefQuestionAnswers)
+		if index < len(m.briefQuestionQueue) {
+			return m.briefQuestionQueue[index], index, len(m.briefQuestionQueue)
+		}
+		return "", 0, len(m.briefQuestionQueue)
+	}
+	questions := normalizeOpenQuestions(m.run.Brief.OpenQuestions)
+	if len(questions) > 0 {
+		return questions[0], 0, len(questions)
 	}
 	return "", 0, 0
 }
@@ -951,6 +1022,101 @@ Answer: %s
 
 Update the brief. Remove resolved open questions, keep unresolved questions, and adjust ready_to_start if appropriate.
 `, question, input))
+}
+
+func (m *Model) consumeBriefInput(input string) (string, bool) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", false
+	}
+	questions := normalizeOpenQuestions(m.run.Brief.OpenQuestions)
+	if len(m.briefQuestionQueue) > 0 {
+		questions = append([]string{}, m.briefQuestionQueue...)
+	}
+	if len(questions) <= 1 {
+		return m.briefSubmissionText(input), false
+	}
+	m.beginBriefQuestionFlow(questions)
+	index := len(m.briefQuestionAnswers)
+	if index >= len(m.briefQuestionQueue) {
+		return "", false
+	}
+	m.briefQuestionAnswers = append(m.briefQuestionAnswers, briefAnswer{
+		Question: m.briefQuestionQueue[index],
+		Answer:   input,
+	})
+	if len(m.briefQuestionAnswers) < len(m.briefQuestionQueue) {
+		return "", true
+	}
+	m.briefQuestionSubmitting = true
+	return briefSubmissionTextForAnswers(m.briefQuestionAnswers), false
+}
+
+func (m *Model) beginBriefQuestionFlow(questions []string) {
+	if len(m.briefQuestionQueue) > 0 {
+		return
+	}
+	m.briefQuestionQueue = append([]string{}, questions...)
+	m.briefQuestionAnswers = nil
+	m.briefQuestionSubmitting = false
+}
+
+func (m *Model) resetBriefQuestionFlow() {
+	m.briefQuestionQueue = nil
+	m.briefQuestionAnswers = nil
+	m.briefQuestionSubmitting = false
+}
+
+func (m Model) prioritizeBriefReply() bool {
+	if m.inFlight {
+		return true
+	}
+	_, _, total := m.activeBriefQuestion()
+	return total > 0
+}
+
+func (m Model) briefFooterHint() string {
+	if _, index, total := m.activeBriefQuestion(); total > 0 {
+		if total == 1 {
+			return fmt.Sprintf("Enter submits your answer to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)
+		}
+		if index+1 < total {
+			return fmt.Sprintf("Enter records your answer and moves to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+2, total)
+		}
+		return fmt.Sprintf("Enter sends your answers back to the manager after question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)
+	}
+	return "Enter sends the next message to the manager. Press ctrl+s to start the discussion."
+}
+
+func briefSubmissionTextForAnswers(answers []briefAnswer) string {
+	if len(answers) == 0 {
+		return ""
+	}
+	lines := []string{
+		"The user answered the current manager follow-up questions for the planning brief.",
+		"",
+	}
+	for i, answer := range answers {
+		lines = append(lines,
+			fmt.Sprintf("Question %d: %s", i+1, strings.TrimSpace(answer.Question)),
+			fmt.Sprintf("Answer %d: %s", i+1, strings.TrimSpace(answer.Answer)),
+			"",
+		)
+	}
+	lines = append(lines, "Update the brief. Remove resolved open questions, keep unresolved questions, and adjust ready_to_start if appropriate.")
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func normalizeOpenQuestions(questions []string) []string {
+	normalized := make([]string, 0, len(questions))
+	for _, question := range questions {
+		question = strings.TrimSpace(question)
+		if question == "" {
+			continue
+		}
+		normalized = append(normalized, question)
+	}
+	return normalized
 }
 
 func (m Model) statusContent() string {
