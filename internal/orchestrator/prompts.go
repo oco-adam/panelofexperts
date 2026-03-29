@@ -58,6 +58,16 @@ const proposalSchema = `{
   }
 }`
 
+const documentDraftSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["path", "markdown"],
+  "properties": {
+    "path": {"type": "string"},
+    "markdown": {"type": "string"}
+  }
+}`
+
 const reviewSchema = `{
   "type": "object",
   "additionalProperties": false,
@@ -181,6 +191,30 @@ Brief: %s
 Current proposal: %s
 Expert review bundle: %s
 	`, run.CWD, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(reviews)))
+}
+
+func buildDocumentDraftPrompt(run model.RunState, proposal model.Proposal) string {
+	targetPath := strings.TrimSpace(proposal.DeliverablePath)
+	if targetPath == "" {
+		targetPath = strings.TrimSpace(run.Brief.TargetFilePath)
+	}
+	return strings.TrimSpace(fmt.Sprintf(`
+Return only JSON for the final Markdown deliverable.
+
+You are drafting the actual contents that should be written to %s.
+This is no longer a planning or proposal step. Write the finished document itself in the "markdown" field.
+Use the agreed proposal as requirements, not as an output template.
+You may inspect repository files read-only, including the current target file and cited source files, when that improves the final wording or structure.
+Do not call any write, edit, or create tool. The system will write the returned markdown to disk.
+If the target file already exists, rewrite it into a coherent replacement document rather than returning notes about what should change.
+Do not return planning scaffolding, process narration, or review summaries. Do not say what you will do; do it in the markdown.
+Unless the target document genuinely requires them, avoid proposal headings such as Goals, Constraints, Recommended Plan, Risks, Consensus Notes, Open Questions, and Change Summary.
+Set "path" to the target file path and "markdown" to the full final Markdown document.
+
+Repo grounding: %s
+Brief: %s
+Final agreed proposal: %s
+	`, targetPath, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(proposal)))
 }
 
 func mustJSON(value any) string {

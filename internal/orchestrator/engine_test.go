@@ -204,6 +204,20 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 func TestEngineWritesDocumentDeliverableToTargetFile(t *testing.T) {
 	tempDir := t.TempDir()
 	targetFile := filepath.Join(tempDir, "DESIGN.md")
+	finalDocument := strings.TrimSpace(`
+# Design Doc TUI Design System
+
+This document defines the terminal UI design system for the app.
+
+## Document Authority
+
+` + "`DESIGN.md`" + ` is the canonical reference for shared terminal UI patterns and screen behavior.
+
+## Semantic Tokens
+
+Use semantic roles for typography, borders, spacing, emphasis, and feedback states so implementation details can evolve without changing the contract.
+`)
+	sawDeliverable := false
 
 	handler := func(request model.Request) (string, error) {
 		switch request.OutputKind {
@@ -247,6 +261,15 @@ func TestEngineWritesDocumentDeliverableToTargetFile(t *testing.T) {
 				Converged:           true,
 				ChangeSummary:       "Finalized the markdown deliverable.",
 			}), nil
+		case "deliverable":
+			sawDeliverable = true
+			if !strings.Contains(strings.ToLower(request.Prompt), "this is no longer a planning or proposal step") {
+				t.Fatalf("expected deliverable prompt to explicitly leave planning mode, got:\n%s", request.Prompt)
+			}
+			return mustMarshal(t, model.DocumentDraft{
+				Path:     targetFile,
+				Markdown: finalDocument,
+			}), nil
 		default:
 			t.Fatalf("unexpected output kind %q", request.OutputKind)
 			return "", nil
@@ -278,6 +301,9 @@ func TestEngineWritesDocumentDeliverableToTargetFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run discussion: %v", err)
 	}
+	if !sawDeliverable {
+		t.Fatalf("expected manager to run a final deliverable drafting pass")
+	}
 
 	if run.DeliverablePath != targetFile {
 		t.Fatalf("expected deliverable path %q, got %q", targetFile, run.DeliverablePath)
@@ -286,14 +312,8 @@ func TestEngineWritesDocumentDeliverableToTargetFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read target file: %v", err)
 	}
-	if !strings.Contains(string(data), "# Design Doc TUI Design System") {
-		t.Fatalf("expected target file to contain rendered deliverable title, got:\n%s", string(data))
-	}
-	if !strings.Contains(string(data), "## Document Authority") {
-		t.Fatalf("expected target file to contain rendered plan sections, got:\n%s", string(data))
-	}
-	if strings.Contains(string(data), "Stay in planning mode") {
-		t.Fatalf("expected planning-only constraint to be removed from deliverable, got:\n%s", string(data))
+	if strings.TrimSpace(string(data)) != finalDocument {
+		t.Fatalf("expected target file to contain the drafted final document, got:\n%s", string(data))
 	}
 	finalData, err := os.ReadFile(filepath.Join(run.OutputDir, "final.md"))
 	if err != nil {

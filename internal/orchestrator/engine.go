@@ -36,6 +36,7 @@ type Engine struct {
 const (
 	managerBriefTimeout        = 5 * time.Minute
 	managerProposalTimeout     = 5 * time.Minute
+	managerDeliverableTimeout  = 8 * time.Minute
 	defaultExpertReviewTimeout = 5 * time.Minute
 	claudeExpertReviewTimeout  = 5 * time.Minute
 	promptOnlyRetryTimeout     = 90 * time.Second
@@ -444,11 +445,35 @@ finalize:
 	run.FinalProposal = &proposal
 	if run.Brief.TaskKind == model.TaskKindDocument {
 		run.CurrentPhase = "writing_deliverable"
-		run.DeliverablePath = proposal.DeliverablePath
-		if strings.TrimSpace(run.DeliverablePath) == "" {
-			run.DeliverablePath = run.Brief.TargetFilePath
+		run.WaitingSummary = "Waiting on final deliverable draft"
+		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateRunning, "writing_deliverable", "Drafting final deliverable", e.now())
+		e.touch(&run)
+		_ = store.SaveState(run)
+		notify()
+
+		draft := normalizeDocumentDraft(model.DocumentDraft{
+			Path:     proposal.DeliverablePath,
+			Markdown: proposal.DeliverableMarkdown,
+		}, run.Brief, proposal, run.CWD)
+		if strings.TrimSpace(draft.Markdown) != "" {
+			if err := validateDocumentDraft(draft); err != nil {
+				draft.Markdown = ""
+			}
 		}
-		run.FinalMarkdown = render.RenderDeliverableMarkdown(run, proposal)
+		if strings.TrimSpace(draft.Markdown) == "" {
+			var draftErr error
+			draft, draftErr = e.runManagerDocumentDraft(ctx, managerProvider, &run, proposal, updateProgress)
+			if draftErr != nil {
+				e.markRunFailed(&run, run.Manager.ID, "deliverable_draft_failed", model.StopReasonManagerFailed, "deliverable_draft_failed", draftErr)
+				e.touch(&run)
+				_ = store.SaveState(run)
+				notify()
+				return run, draftErr
+			}
+		}
+
+		run.DeliverablePath = draft.Path
+		run.FinalMarkdown = strings.TrimSpace(draft.Markdown) + "\n"
 		if err := writeDeliverableFile(run.DeliverablePath, run.FinalMarkdown); err != nil {
 			e.markRunFailed(&run, run.Manager.ID, "deliverable_write_failed", model.StopReasonManagerFailed, "deliverable_write_failed", err)
 			e.touch(&run)
@@ -650,6 +675,48 @@ func (e *Engine) runManagerProposal(
 	e.touch(run)
 	_ = store.SaveState(*run)
 	return proposal, version, nil
+}
+
+func (e *Engine) runManagerDocumentDraft(
+	ctx context.Context,
+	provider providers.AgentProvider,
+	run *model.RunState,
+	proposal model.Proposal,
+	updateProgress func(model.ProgressEvent),
+) (model.DocumentDraft, error) {
+	progressCh := make(chan model.ProgressEvent, 16)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for event := range progressCh {
+			updateProgress(event)
+		}
+	}()
+
+	draft, err := runStructuredRequest[model.DocumentDraft](ctx, provider, model.Request{
+		RunID:      run.ID,
+		Round:      run.CurrentRound,
+		Version:    run.LatestProposalVersion(),
+		AgentID:    run.Manager.ID,
+		Role:       run.Manager.Role,
+		CWD:        run.CWD,
+		Prompt:     buildDocumentDraftPrompt(*run, proposal),
+		JSONSchema: documentDraftSchema,
+		OutputKind: "deliverable",
+		Timeout:    managerDeliverableTimeout,
+	}, progressCh, func(draft model.DocumentDraft) error {
+		return validateDocumentDraft(normalizeDocumentDraft(draft, run.Brief, proposal, run.CWD))
+	}, buildManagerRetryRequest)
+	close(progressCh)
+	wg.Wait()
+	if err != nil {
+		return model.DocumentDraft{}, err
+	}
+
+	draft = normalizeDocumentDraft(draft, run.Brief, proposal, run.CWD)
+	e.appendTimeline(run, run.CurrentRound, run.Manager.ID, "Manager drafted the final deliverable")
+	return draft, nil
 }
 
 func (e *Engine) getProvider(providerID model.ProviderID) (providers.AgentProvider, error) {
@@ -1181,6 +1248,51 @@ func normalizeProposal(proposal model.Proposal, brief model.Brief, cwd string) m
 	}
 	proposal.DeliverableMarkdown = strings.TrimSpace(proposal.DeliverableMarkdown)
 	return proposal
+}
+
+func normalizeDocumentDraft(draft model.DocumentDraft, brief model.Brief, proposal model.Proposal, cwd string) model.DocumentDraft {
+	draft.Path = strings.TrimSpace(draft.Path)
+	if draft.Path == "" {
+		draft.Path = strings.TrimSpace(proposal.DeliverablePath)
+	}
+	if draft.Path == "" {
+		draft.Path = strings.TrimSpace(brief.TargetFilePath)
+	}
+	if strings.TrimSpace(brief.TargetFilePath) != "" {
+		draft.Path = strings.TrimSpace(brief.TargetFilePath)
+	}
+	if draft.Path != "" && !filepath.IsAbs(draft.Path) {
+		draft.Path = filepath.Join(cwd, draft.Path)
+	}
+	if draft.Path != "" {
+		draft.Path = filepath.Clean(draft.Path)
+	}
+	draft.Markdown = strings.TrimSpace(draft.Markdown)
+	return draft
+}
+
+func validateDocumentDraft(draft model.DocumentDraft) error {
+	if strings.TrimSpace(draft.Path) == "" {
+		return errors.New("document draft path is empty")
+	}
+	if strings.TrimSpace(draft.Markdown) == "" {
+		return errors.New("document draft markdown is empty")
+	}
+	lower := strings.ToLower(draft.Markdown)
+	for _, snippet := range []string{
+		"stay in planning mode",
+		"return only json",
+		"repo grounding",
+		"expert review",
+		"planning proposal",
+		"manager updated the brief",
+		"do not edit files",
+	} {
+		if strings.Contains(lower, snippet) {
+			return fmt.Errorf("document draft still contains planning artifact %q", snippet)
+		}
+	}
+	return nil
 }
 
 func ensureStringSlice(items []string) []string {
