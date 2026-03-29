@@ -56,6 +56,13 @@ const (
 	TaskKindDocument TaskKind = "document"
 )
 
+type MergeStrategy string
+
+const (
+	MergeStrategySequential MergeStrategy = "sequential"
+	MergeStrategyTogether   MergeStrategy = "together"
+)
+
 type AgentState string
 
 const (
@@ -240,6 +247,7 @@ type RunState struct {
 	CWD               string                 `json:"cwd"`
 	OutputDir         string                 `json:"output_dir"`
 	MaxRounds         int                    `json:"max_rounds"`
+	MergeStrategy     MergeStrategy          `json:"merge_strategy"`
 	CurrentRound      int                    `json:"current_round"`
 	CurrentPhase      string                 `json:"current_phase"`
 	Status            RunStatus              `json:"status"`
@@ -261,14 +269,18 @@ type RunState struct {
 	StopReason        StopReason             `json:"stop_reason"`
 }
 
-func NewRunState(id, cwd, outputDir string, maxRounds int, manager AgentConfig, experts []AgentConfig) RunState {
+func NewRunState(id, cwd, outputDir string, maxRounds int, mergeStrategy MergeStrategy, manager AgentConfig, experts []AgentConfig) RunState {
 	now := time.Now().UTC()
+	if mergeStrategy == "" {
+		mergeStrategy = MergeStrategyTogether
+	}
 	run := RunState{
 		ID:             id,
 		ProjectTitle:   defaultProjectTitle(cwd),
 		CWD:            cwd,
 		OutputDir:      outputDir,
 		MaxRounds:      maxRounds,
+		MergeStrategy:  mergeStrategy,
 		Status:         RunStatusDrafting,
 		CurrentPhase:   "setup",
 		StartedAt:      now,
@@ -361,6 +373,17 @@ func ProviderDisplayName(provider ProviderID) string {
 		return "Gemini CLI"
 	default:
 		return strings.Title(provider.String())
+	}
+}
+
+func MergeStrategyDisplayName(strategy MergeStrategy) string {
+	switch strategy {
+	case MergeStrategySequential:
+		return "Sequential"
+	case MergeStrategyTogether:
+		return "Together"
+	default:
+		return strings.Title(string(strategy))
 	}
 }
 

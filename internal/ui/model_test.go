@@ -87,6 +87,9 @@ func TestModelScreenTransitionsAndStatusContent(t *testing.T) {
 	if m.setup.Manager != model.ProviderCodex {
 		t.Fatalf("expected Codex to be the preferred default manager, got %q", m.setup.Manager)
 	}
+	if m.setup.MergeMode != model.MergeStrategyTogether {
+		t.Fatalf("expected together to be the default merge mode, got %q", m.setup.MergeMode)
+	}
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
@@ -221,6 +224,7 @@ func TestBriefQuestionFlowUsesStructuredAnswerPrompt(t *testing.T) {
 		tempDir,
 		OutputRoot(tempDir),
 		10,
+		model.MergeStrategyTogether,
 		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
 		[]model.AgentConfig{},
 	)
@@ -272,6 +276,7 @@ func TestBriefViewFitsShortWindowAndKeepsReplyVisible(t *testing.T) {
 		tempDir,
 		OutputRoot(tempDir),
 		5,
+		model.MergeStrategyTogether,
 		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
 		[]model.AgentConfig{},
 	)
@@ -321,6 +326,7 @@ func TestMonitorViewAutoScrollsTimelineAndFitsWindow(t *testing.T) {
 		tempDir,
 		OutputRoot(tempDir),
 		5,
+		model.MergeStrategyTogether,
 		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
 		[]model.AgentConfig{
 			{ID: "expert-1", Name: "Expert 1 (Codex CLI)", Role: model.RoleExpert, Provider: model.ProviderCodex},
@@ -382,6 +388,7 @@ func TestMonitorViewShowsFailureReasonNearTop(t *testing.T) {
 		tempDir,
 		OutputRoot(tempDir),
 		5,
+		model.MergeStrategyTogether,
 		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
 		[]model.AgentConfig{},
 	)
@@ -428,6 +435,7 @@ func TestResultsViewFitsShortWindowAndShowsControls(t *testing.T) {
 		tempDir,
 		OutputRoot(tempDir),
 		5,
+		model.MergeStrategyTogether,
 		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
 		[]model.AgentConfig{},
 	)
@@ -479,7 +487,7 @@ func TestSetupIntentStartsFirstBriefUpdate(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	m.setup.Focus = 6
+	m.setup.Focus = 7
 	m.syncSetupInputFocus()
 	m.setupInput.SetValue("Create the first brief")
 

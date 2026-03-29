@@ -51,6 +51,7 @@ type SetupState struct {
 	Experts     []model.ProviderID
 	ExpertCount int
 	MaxRounds   int
+	MergeMode   model.MergeStrategy
 	CWD         string
 	OutputRoot  string
 }
@@ -60,6 +61,7 @@ type Model struct {
 	screen       Screen
 	width        int
 	height       int
+	layout       screenLayout
 	events       chan tea.Msg
 	err          string
 	inFlight     bool
@@ -75,109 +77,57 @@ type Model struct {
 	resultViewport viewport.Model
 	spin           spinner.Model
 
-	headerStyle         lipgloss.Style
-	headerTitleStyle    lipgloss.Style
-	headerSubtitleStyle lipgloss.Style
-	panelStyle          lipgloss.Style
-	panelTitleStyle     lipgloss.Style
-	focusStyle          lipgloss.Style
-	mutedStyle          lipgloss.Style
-	errorStyle          lipgloss.Style
-	successStyle        lipgloss.Style
-	warningStyle        lipgloss.Style
-	infoStyle           lipgloss.Style
-	labelStyle          lipgloss.Style
-	valueStyle          lipgloss.Style
-	dividerStyle        lipgloss.Style
+	theme  theme
+	chrome uiChrome
+	motion uiMotion
 }
 
-const setupFieldCount = 7
+const setupFieldCount = 8
 
 func New(engine *orchestrator.Engine, cwd, outputRoot string) Model {
+	theme := newTheme()
+	chrome := newChrome(theme)
+	motion := newMotion(theme)
+	inputStyles := theme.inputStyles()
+
 	input := textinput.New()
 	input.Focus()
 	input.Prompt = "> "
 	input.CharLimit = 0
 	input.SetWidth(80)
+	input.SetStyles(inputStyles)
+
 	setupInput := textinput.New()
 	setupInput.Prompt = "Intent> "
 	setupInput.Placeholder = "Tell the manager what you want to accomplish"
 	setupInput.CharLimit = 0
 	setupInput.SetWidth(80)
-	inputStyles := textinput.DefaultStyles(true)
-	inputStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
-	inputStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	inputStyles.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	inputStyles.Blurred.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("67"))
-	inputStyles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	inputStyles.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	input.SetStyles(inputStyles)
 	setupInput.SetStyles(inputStyles)
 	setupInput.Blur()
-
-	spin := spinner.New()
-	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
 
 	return Model{
 		engine: engine,
 		screen: screenLoading,
+		layout: newScreenLayout(0, 0),
 		events: make(chan tea.Msg, 128),
 		setup: SetupState{
 			ExpertCount: 3,
 			MaxRounds:   5,
+			MergeMode:   model.MergeStrategyTogether,
 			CWD:         cwd,
 			OutputRoot:  outputRoot,
 			Experts:     []model.ProviderID{model.ProviderClaude, model.ProviderGemini, model.ProviderCodex},
 		},
-		setupInput: setupInput,
-		input:      input,
-		spin:       spin,
-		headerStyle: lipgloss.NewStyle().
-			Padding(0, 1),
-		headerTitleStyle: lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("31")).
-			Padding(0, 1),
-		headerSubtitleStyle: lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("81")).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("67")).
-			Padding(0, 1),
-		panelStyle: lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("67")).
-			Padding(0, 1),
-		focusStyle: lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("81")),
-		panelTitleStyle: lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("16")).
-			Background(lipgloss.Color("81")).
-			Padding(0, 1),
-		mutedStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("244")),
-		infoStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("81")).
-			Bold(true),
-		labelStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("110")).
-			Bold(true),
-		valueStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")),
-		dividerStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("67")),
-		errorStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("203")).
-			Bold(true),
-		successStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42")).
-			Bold(true),
-		warningStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true),
+		setupInput:     setupInput,
+		input:          input,
+		briefViewport:  viewport.New(),
+		statusViewport: viewport.New(),
+		timelineView:   viewport.New(),
+		resultViewport: viewport.New(),
+		spin:           motion.newSpinner(),
+		theme:          theme,
+		chrome:         chrome,
+		motion:         motion,
 	}
 }
 
@@ -255,7 +205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 	}
-	if m.screen == screenSetup && m.setup.Focus == 6 {
+	if m.screen == screenSetup && m.setup.Focus == 7 {
 		var cmd tea.Cmd
 		m.setupInput, cmd = m.setupInput.Update(msg)
 		cmds = append(cmds, cmd)
@@ -294,7 +244,7 @@ func (m Model) View() tea.View {
 
 	switch m.screen {
 	case screenLoading:
-		content = m.headerStyle.Render("Detecting providers...")
+		content = m.viewLoading()
 	case screenSetup:
 		content = m.viewSetup()
 	case screenBrief:
@@ -317,13 +267,13 @@ func waitForEvent(events <-chan tea.Msg) tea.Cmd {
 }
 
 func (m *Model) resize() {
-	contentHeight := max(6, m.height-8)
-	panelWidth := max(30, m.width-4)
-	m.briefViewport = viewport.New(viewport.WithWidth(panelWidth), viewport.WithHeight(contentHeight-4))
-	m.statusViewport = viewport.New(viewport.WithWidth(max(30, panelWidth/2-1)), viewport.WithHeight(contentHeight))
-	m.timelineView = viewport.New(viewport.WithWidth(max(30, panelWidth/2-1)), viewport.WithHeight(contentHeight))
-	m.resultViewport = viewport.New(viewport.WithWidth(panelWidth), viewport.WithHeight(contentHeight))
-	m.input.SetWidth(max(24, panelWidth-8))
+	m.layout = newScreenLayout(m.width, m.height)
+	m.briefViewport.SetWidth(m.layout.contentWidth)
+	m.statusViewport.SetWidth(m.layout.monitorStatusW)
+	m.timelineView.SetWidth(m.layout.monitorTimelineW)
+	m.resultViewport.SetWidth(m.layout.contentWidth)
+	m.input.SetWidth(m.layout.inputWidth)
+	m.setupInput.SetWidth(m.layout.inputWidth)
 	m.refreshRunViews()
 }
 
@@ -351,7 +301,7 @@ func (m Model) availableProviders() []model.ProviderID {
 }
 
 func (m *Model) updateSetup(msg tea.KeyMsg) tea.Cmd {
-	if m.setup.Focus == 6 {
+	if m.setup.Focus == 7 {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return tea.Quit
@@ -394,6 +344,7 @@ func (m *Model) createRunFromSetup() tea.Cmd {
 		CWD:             m.setup.CWD,
 		OutputRoot:      m.setup.OutputRoot,
 		MaxRounds:       m.setup.MaxRounds,
+		MergeStrategy:   m.setup.MergeMode,
 		ManagerProvider: m.setup.Manager,
 		ExpertProviders: append([]model.ProviderID{}, m.setup.Experts[:m.setup.ExpertCount]...),
 	})
@@ -458,6 +409,12 @@ func (m *Model) adjustSetup(delta int) {
 		m.setup.MaxRounds += delta
 		if m.setup.MaxRounds < 1 {
 			m.setup.MaxRounds = 1
+		}
+	case 6:
+		if m.setup.MergeMode == model.MergeStrategyTogether {
+			m.setup.MergeMode = model.MergeStrategySequential
+		} else {
+			m.setup.MergeMode = model.MergeStrategyTogether
 		}
 	}
 }
@@ -526,188 +483,276 @@ func (m *Model) refreshRunViews() {
 	m.syncResultsViewportLayout()
 }
 
+func (m Model) viewLoading() string {
+	activity := m.motion.inlineWait(m.spin.View(), "Boot sequence", "Detecting local providers", m.chrome.muted)
+	return joinBlocks(
+		m.chrome.header("Panel of Experts", "Startup", ""),
+		m.chrome.banner("Scanning", "Detecting providers and local auth state", toneInfo),
+		m.chrome.muted.Render(activity),
+	)
+}
+
 func (m Model) viewSetup() string {
-	configLines := []string{
+	configPanel := m.chrome.panelBlock("Run Blueprint", strings.Join(m.setupConfigLines(), "\n"), m.setupConfigWidth(), toneFocus)
+	providerPanel := m.chrome.panelBlock("Provider Status", m.providerStatusContent(), m.setupProviderWidth(), toneSecondary)
+	intentPanel := m.chrome.panelBlock("Initial Intent", strings.Join([]string{
+		m.setupInput.View(),
+		m.chrome.muted.Render("Create the run and this message will be sent to the manager immediately."),
+	}, "\n"), m.layout.contentWidth, toneInfo)
+
+	var top string
+	if m.setupUsesSplitPanels() {
+		top = lipgloss.JoinHorizontal(lipgloss.Top, configPanel, strings.Repeat(" ", monitorPanelGap), providerPanel)
+	} else {
+		top = lipgloss.JoinVertical(lipgloss.Left, configPanel, "", providerPanel)
+	}
+
+	view := joinBlocks(
+		m.chrome.header("Panel of Experts", "Setup", ""),
+		m.chrome.banner("Ready", m.providerReadinessSummary(), toneInfo),
+		top,
+		intentPanel,
+		m.chrome.muted.Render("Use tab/j/k to move, h/l to change values, enter to create the run. Focus Initial Intent to type your first request."),
+	)
+	if m.err != "" {
+		view = joinBlocks(view, m.chrome.banner("Error", m.err, toneDanger))
+	}
+	return view
+}
+
+func (m Model) viewBrief() string {
+	briefPanel := m.chrome.panelBlock("Brief Snapshot", m.briefViewport.View(), m.layout.contentWidth, toneInfo)
+	blocks := []string{
+		m.briefHeaderBlock(),
+		briefPanel,
+		m.briefFooterBlock(),
+	}
+	return joinBlocks(blocks...)
+}
+
+func (m Model) viewMonitor() string {
+	statusPanel := m.chrome.panelBlock("Agent Status", m.statusViewport.View(), m.layout.monitorStatusW, toneInfo)
+	timelinePanel := m.chrome.panelBlock("Timeline", m.timelineView.View(), m.layout.monitorTimelineW, toneWarning)
+
+	var activity string
+	if m.layout.monitorSplit {
+		activity = lipgloss.JoinHorizontal(lipgloss.Top, statusPanel, strings.Repeat(" ", monitorPanelGap), timelinePanel)
+	} else {
+		activity = lipgloss.JoinVertical(lipgloss.Left, statusPanel, "", timelinePanel)
+	}
+
+	return joinBlocks(
+		m.monitorHeaderBlock(),
+		activity,
+		m.monitorFooterBlock(),
+	)
+}
+
+func (m Model) viewResults() string {
+	resultsPanel := m.chrome.panelBlock("Final Markdown", m.resultViewport.View(), m.layout.contentWidth, toneSuccess)
+	return joinBlocks(
+		m.resultsTopBlock(),
+		resultsPanel,
+	)
+}
+
+func (m Model) setupConfigLines() []string {
+	return []string{
 		m.renderSetupField(0, "Manager", model.ProviderDisplayName(m.setup.Manager)),
 		m.renderSetupField(1, "Expert 1", model.ProviderDisplayName(m.setup.Experts[0])),
 		m.renderSetupField(2, "Expert 2", model.ProviderDisplayName(m.setup.Experts[1])),
 		m.renderSetupField(3, "Expert 3", m.thirdExpertDisplay()),
 		m.renderSetupField(4, "Expert count", fmt.Sprintf("%d", m.setup.ExpertCount)),
 		m.renderSetupField(5, "Max rounds", fmt.Sprintf("%d", m.setup.MaxRounds)),
+		m.renderSetupField(6, "Merge mode", model.MergeStrategyDisplayName(m.setup.MergeMode)),
 		"",
-		m.renderLabeledLine("Workspace", m.setup.CWD),
-		m.renderLabeledLine("Output root", m.setup.OutputRoot),
+		m.chrome.labeledLine("Workspace", m.setup.CWD),
+		m.chrome.labeledLine("Output root", m.setup.OutputRoot),
 	}
-	intentContent := strings.Join([]string{
-		m.setupInput.View(),
-		"",
-		m.mutedStyle.Render("Create the run and this message will be sent to the manager immediately."),
-	}, "\n")
-	providerLines := []string{}
+}
+
+func (m Model) setupUsesSplitPanels() bool {
+	return m.width >= 110
+}
+
+func (m Model) setupConfigWidth() int {
+	if !m.setupUsesSplitPanels() {
+		return m.layout.contentWidth
+	}
+	return max(minPanelWidth, (m.layout.contentWidth-monitorPanelGap)/2)
+}
+
+func (m Model) setupProviderWidth() int {
+	if !m.setupUsesSplitPanels() {
+		return m.layout.contentWidth
+	}
+	return max(minPanelWidth, m.layout.contentWidth-m.setupConfigWidth()-monitorPanelGap)
+}
+
+func (m Model) providerReadinessSummary() string {
+	ready, available, missing := 0, 0, 0
+	for _, id := range model.AllProviders() {
+		status := m.capabilityStatus(m.capabilities[id])
+		switch status {
+		case "ready":
+			ready++
+		case "available":
+			available++
+		default:
+			missing++
+		}
+	}
+	return fmt.Sprintf("%d ready, %d available, %d missing", ready, available, missing)
+}
+
+func (m Model) capabilityStatus(capability model.Capability) string {
+	if capability.Available {
+		if capability.Authenticated {
+			return "ready"
+		}
+		return "available"
+	}
+	return "missing"
+}
+
+func (m Model) providerStatusContent() string {
+	lines := make([]string, 0, len(model.AllProviders())*2)
 	for _, id := range model.AllProviders() {
 		capability := m.capabilities[id]
-		status := "missing"
-		if capability.Available {
-			status = "available"
-			if capability.Authenticated {
-				status = "ready"
-			}
-		}
-		providerLines = append(providerLines,
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				m.providerBadge(id),
+		status := m.capabilityStatus(capability)
+		lines = append(lines,
+			lipgloss.JoinHorizontal(
+				lipgloss.Center,
+				m.chrome.providerBadge(id),
 				" ",
-				m.statusBadge(status),
+				m.chrome.statusBadge(status),
 			),
 			"  "+emptyFallback(capability.Summary, "No provider summary available"),
-			"",
 		)
 	}
-	lines := []string{
-		m.header("Panel of Experts", "Setup"),
-		"",
-		m.renderDivider("Run Configuration"),
-		m.renderPanel("Panel Setup", strings.Join(configLines, "\n"), m.width-4, "81"),
-		"",
-		m.renderDivider("Initial Intent"),
-		m.renderPanel("Initial Intent", intentContent, m.width-4, "67"),
-		"",
-		m.renderDivider("Providers"),
-		m.renderPanel("Provider Status", strings.TrimSpace(strings.Join(providerLines, "\n")), m.width-4, "214"),
-		"",
-		m.mutedStyle.Render("Use tab/j/k to move, h/l to change values, enter to create the run. Focus Initial Intent to type your first request."),
-	}
-	if m.err != "" {
-		lines = append(lines, "", m.errorStyle.Render(m.err))
-	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n\n")
 }
 
-func (m Model) viewBrief() string {
-	meta := lipgloss.JoinHorizontal(lipgloss.Center,
-		m.metaBadge("Run", m.run.ID),
+func (m Model) briefHeaderBlock() string {
+	meta := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		m.chrome.metaBadge("Run", m.run.ID, toneSecondary),
 		" ",
-		m.metaBadge("Status", string(m.run.Status)),
+		m.chrome.metaBadge("Status", humanizeToken(string(m.run.Status)), statusTone(string(m.run.Status))),
 	)
-	briefViewport := m.briefViewport
-	briefViewport.SetContent(m.briefContent())
-	briefViewport.SetHeight(m.briefViewport.Height())
-	body := []string{
-		m.header(m.run.ProjectTitle, "Manager Brief"),
-		"",
+	waiting := m.chrome.labeledLine("Waiting", emptyFallback(m.run.WaitingSummary, "Waiting for the next user action"))
+	return joinBlocks(
+		m.chrome.header(m.run.ProjectTitle, "Manager Brief", m.inlineActivity("Brief live")),
 		meta,
-		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
-		"",
-		m.renderDivider("Brief Snapshot"),
-		m.renderPanel("Brief Snapshot", briefViewport.View(), m.width-4, "81"),
-	}
+		waiting,
+	)
+}
+
+func (m Model) briefFooterBlock() string {
+	blocks := []string{}
 	if question, index, total := m.activeBriefQuestion(); question != "" {
-		body = append(body,
-			m.renderDivider("Current Question"),
-			m.renderPanel("Manager Question", strings.Join([]string{
-				fmt.Sprintf("Manager Question %d of %d", index+1, total),
-				"",
-				question,
-			}, "\n"), m.width-4, "214"),
-		)
+		blocks = append(blocks, m.chrome.panelBlock("Manager Question", strings.Join([]string{
+			fmt.Sprintf("Manager Question %d of %d", index+1, total),
+			"",
+			question,
+		}, "\n"), m.layout.contentWidth, toneWarning))
 	}
+
 	if m.inFlight {
-		body = append(body, fmt.Sprintf("%s %s", m.spin.View(), m.infoStyle.Render("Manager is updating the brief")))
-	} else if question, index, total := m.activeBriefQuestion(); question != "" {
-		body = append(body, m.mutedStyle.Render(fmt.Sprintf("Enter submits your answer to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)))
+		blocks = append(blocks, m.chrome.banner("Working", "Manager is updating the brief", toneWarning))
+	} else if _, index, total := m.activeBriefQuestion(); total > 0 {
+		blocks = append(blocks, m.chrome.muted.Render(fmt.Sprintf("Enter submits your answer to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)))
 	} else {
-		body = append(body, m.mutedStyle.Render("Enter sends the next message to the manager. Press ctrl+s to start the discussion."))
+		blocks = append(blocks, m.chrome.muted.Render("Enter sends the next message to the manager. Press ctrl+s to start the discussion."))
 	}
-	body = append(body, m.renderPanel("Reply", m.input.View(), m.width-4, "67"))
+
+	blocks = append(blocks, m.chrome.panelBlock("Reply", m.input.View(), m.layout.contentWidth, toneFocus))
 	if m.err != "" {
-		body = append(body, "", m.errorStyle.Render(m.err))
+		blocks = append(blocks, m.chrome.banner("Error", m.err, toneDanger))
 	}
-	return strings.Join(body, "\n")
+	return joinBlocks(blocks...)
 }
 
-func (m Model) viewMonitor() string {
-	left := m.renderPanel("Agent Status", m.statusViewport.View(), max(30, m.width/2-3), "81")
-	right := m.renderPanel("Timeline", m.timelineView.View(), max(30, m.width/2-3), "214")
-	main := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
-	meta := lipgloss.JoinHorizontal(lipgloss.Center,
-		m.metaBadge("Run", m.run.ID),
+func (m Model) monitorHeaderBlock() string {
+	meta := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		m.chrome.metaBadge("Run", m.run.ID, toneSecondary),
 		" ",
-		m.metaBadge("Phase", m.run.CurrentPhase),
+		m.chrome.metaBadge("Phase", humanizeToken(m.run.CurrentPhase), phaseTone(m.run.CurrentPhase)),
 		" ",
-		m.metaBadge("Round", m.run.DisplayRound()),
+		m.chrome.metaBadge("Round", m.run.DisplayRound(), toneInfo),
 		" ",
-		m.metaBadge("Status", string(m.run.Status)),
+		m.chrome.metaBadge("Status", humanizeToken(string(m.run.Status)), statusTone(string(m.run.Status))),
 	)
-	failureSummary := m.currentFailureSummary()
 
-	lines := []string{
-		m.header(m.run.ProjectTitle, "Discussion Monitor"),
-		"",
+	blocks := []string{
+		m.chrome.header(m.run.ProjectTitle, "Discussion Monitor", m.inlineActivity("Discussion live")),
 		meta,
-		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
+		m.chrome.labeledLine("Waiting", emptyFallback(m.run.WaitingSummary, "Waiting for the next orchestration step")),
 	}
-	if failureSummary != "" {
-		lines = append(lines, m.errorStyle.Render("Failure: "+failureSummary))
+	if failureSummary := m.currentFailureSummary(); failureSummary != "" {
+		blocks = append(blocks, m.chrome.error.Render("Failure: "+failureSummary))
 	}
-	lines = append(lines,
-		"",
-		m.renderDivider("Live Activity"),
-		main,
-		"",
-	)
+	return joinBlocks(blocks...)
+}
+
+func (m Model) monitorFooterBlock() string {
+	blocks := []string{}
 	if m.run.FinalProposal != nil {
-		lines = append(lines, m.successStyle.Render("Discussion finished. Press r to view the final markdown."))
+		blocks = append(blocks, m.chrome.banner("Ready", "Discussion finished. Press r to view the final markdown.", toneSuccess))
 	} else if m.inFlight {
-		lines = append(lines, fmt.Sprintf("%s Orchestration is running", m.spin.View()))
+		blocks = append(blocks, m.chrome.banner("Running", "Orchestration is active", toneWarning))
 	}
-	if m.err != "" && m.err != failureSummary {
-		lines = append(lines, "", m.errorStyle.Render(m.err))
+	if m.err != "" && m.err != m.currentFailureSummary() {
+		blocks = append(blocks, m.chrome.banner("Error", m.err, toneDanger))
 	}
-	return strings.Join(lines, "\n")
+	return joinBlocks(blocks...)
 }
 
-func (m Model) viewResults() string {
-	meta := lipgloss.JoinHorizontal(lipgloss.Center,
-		m.metaBadge("Run", m.run.ID),
+func (m Model) resultsTopBlock() string {
+	meta := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		m.chrome.metaBadge("Run", m.run.ID, toneSecondary),
 		" ",
-		m.metaBadge("Stop", string(m.run.StopReason)),
+		m.chrome.metaBadge("Stop", humanizeToken(string(m.run.StopReason)), statusTone(string(m.run.StopReason))),
 		" ",
-		m.metaBadge("Status", string(m.run.Status)),
+		m.chrome.metaBadge("Status", humanizeToken(string(m.run.Status)), statusTone(string(m.run.Status))),
 	)
-	lines := []string{
-		m.header(m.run.ProjectTitle, "Final Proposal"),
-		"",
-		meta,
-		m.renderLabeledLine("Final markdown", m.run.FinalMarkdownPath),
-	}
-	failureSummary := m.currentFailureSummary()
-	if failureSummary != "" {
-		lines = append(lines, m.errorStyle.Render("Failure: "+failureSummary))
+
+	savedLines := []string{
+		m.chrome.labeledLine("Final markdown", emptyFallback(m.run.FinalMarkdownPath, "Not written")),
 	}
 	if strings.TrimSpace(m.run.DeliverablePath) != "" {
-		lines = append(lines, m.renderLabeledLine("Deliverable file", m.run.DeliverablePath))
+		savedLines = append(savedLines, m.chrome.labeledLine("Deliverable file", m.run.DeliverablePath))
 	}
-	lines = append(lines,
-		"",
-		m.successStyle.Render("Final proposal ready. Review the markdown below or use the saved file paths above."),
-		m.mutedStyle.Render("Use up/down or j/k to scroll. Press m to return to the monitor, q to quit."),
-		"",
-		m.renderDivider("Final Markdown"),
-		m.renderPanel("Final Markdown", m.resultViewport.View(), m.width-4, "42"),
+
+	blocks := []string{
+		m.chrome.header(m.run.ProjectTitle, "Final Proposal", ""),
+		meta,
+		m.chrome.panelBlock("Saved Outputs", strings.Join(savedLines, "\n"), m.layout.contentWidth, toneInfo),
+	}
+	if failureSummary := m.currentFailureSummary(); failureSummary != "" {
+		blocks = append(blocks, m.chrome.banner("Failure", failureSummary, toneDanger))
+	}
+	blocks = append(blocks,
+		m.chrome.banner("Ready", "Final proposal ready. Review the markdown below or use the saved file paths above.", toneSuccess),
+		m.chrome.muted.Render("Use up/down or j/k to scroll. Press m to return to the monitor, q to quit."),
 	)
-	if m.err != "" && m.err != failureSummary {
-		lines = append(lines, "", m.errorStyle.Render(m.err))
+	if m.err != "" && m.err != m.currentFailureSummary() {
+		blocks = append(blocks, m.chrome.banner("Error", m.err, toneDanger))
 	}
-	return strings.Join(lines, "\n")
+	return joinBlocks(blocks...)
+}
+
+func (m Model) inlineActivity(label string) string {
+	if !m.inFlight {
+		return ""
+	}
+	return m.motion.inlineWait(m.spin.View(), label, "", m.chrome.muted)
 }
 
 func (m Model) renderSetupField(index int, label, value string) string {
-	label = fmt.Sprintf("%-12s", label+":")
-	line := lipgloss.JoinHorizontal(lipgloss.Center, m.labelStyle.Render(label), " ", m.valueStyle.Render(value))
-	if m.setup.Focus == index {
-		return m.focusStyle.Render("> " + line)
-	}
-	return "  " + line
+	return m.chrome.setupField(label, value, m.setup.Focus == index)
 }
 
 func (m Model) thirdExpertDisplay() string {
@@ -742,7 +787,7 @@ func (m *Model) syncBriefInput() {
 }
 
 func (m *Model) syncSetupInputFocus() {
-	if m.setup.Focus == 6 {
+	if m.setup.Focus == 7 {
 		m.setupInput.Focus()
 		return
 	}
@@ -750,121 +795,52 @@ func (m *Model) syncSetupInputFocus() {
 }
 
 func (m *Model) syncBriefViewportLayout() {
-	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.briefViewport.Width() == 0 {
+	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.layout.contentWidth == 0 {
 		return
 	}
-
-	meta := lipgloss.JoinHorizontal(lipgloss.Center,
-		m.metaBadge("Run", m.run.ID),
-		" ",
-		m.metaBadge("Status", string(m.run.Status)),
-	)
-	headerBlock := strings.Join([]string{
-		m.header(m.run.ProjectTitle, "Manager Brief"),
-		"",
-		meta,
-		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
-		"",
-		m.renderDivider("Brief Snapshot"),
-	}, "\n")
-
-	footerParts := []string{}
-	if question, index, total := m.activeBriefQuestion(); question != "" {
-		footerParts = append(footerParts,
-			m.renderDivider("Current Question"),
-			m.renderPanel("Manager Question", strings.Join([]string{
-				fmt.Sprintf("Manager Question %d of %d", index+1, total),
-				"",
-				question,
-			}, "\n"), m.width-4, "214"),
-		)
-	}
-
-	if m.inFlight {
-		footerParts = append(footerParts, fmt.Sprintf("%s %s", m.spin.View(), m.infoStyle.Render("Manager is updating the brief")))
-	} else if _, index, total := m.activeBriefQuestion(); total > 0 {
-		footerParts = append(footerParts, m.mutedStyle.Render(fmt.Sprintf("Enter submits your answer to manager question %d of %d. Press ctrl+s to start the discussion anyway.", index+1, total)))
-	} else {
-		footerParts = append(footerParts, m.mutedStyle.Render("Enter sends the next message to the manager. Press ctrl+s to start the discussion."))
-	}
-	footerParts = append(footerParts, m.renderPanel("Reply", m.input.View(), m.width-4, "67"))
-	if m.err != "" {
-		footerParts = append(footerParts, "", m.errorStyle.Render(m.err))
-	}
-
-	available := m.height - lipgloss.Height(headerBlock) - lipgloss.Height(strings.Join(footerParts, "\n")) - 5
-	if available < 2 {
-		available = 2
-	}
-	m.briefViewport.SetHeight(available)
+	headerHeight := lipgloss.Height(m.briefHeaderBlock())
+	footerHeight := lipgloss.Height(m.briefFooterBlock())
+	panelChrome := m.chrome.panelChromeHeight("Brief Snapshot", m.layout.contentWidth, toneInfo)
+	m.briefViewport.SetHeight(m.layout.viewportHeight(headerHeight, footerHeight, panelChrome, 5, 1))
 	m.briefViewport.SetContent(m.briefContent())
 }
 
 func (m *Model) syncMonitorViewportLayout() {
-	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.statusViewport.Width() == 0 || m.timelineView.Width() == 0 {
+	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.layout.contentWidth == 0 {
 		return
 	}
 
-	meta := lipgloss.JoinHorizontal(lipgloss.Center,
-		m.metaBadge("Run", m.run.ID),
-		" ",
-		m.metaBadge("Phase", m.run.CurrentPhase),
-		" ",
-		m.metaBadge("Round", m.run.DisplayRound()),
-		" ",
-		m.metaBadge("Status", string(m.run.Status)),
-	)
-	headerBlock := strings.Join([]string{
-		m.header(m.run.ProjectTitle, "Discussion Monitor"),
-		"",
-		meta,
-		m.renderLabeledLine("Waiting", m.run.WaitingSummary),
-	}, "\n")
-	if failureSummary := m.currentFailureSummary(); failureSummary != "" {
-		headerBlock += "\n" + m.errorStyle.Render("Failure: "+failureSummary)
-	}
-	headerBlock += "\n\n" + m.renderDivider("Live Activity")
+	m.statusViewport.SetWidth(m.layout.monitorStatusW)
+	m.timelineView.SetWidth(m.layout.monitorTimelineW)
 
-	footerParts := []string{}
-	if m.run.FinalProposal != nil {
-		footerParts = append(footerParts, m.successStyle.Render("Discussion finished. Press r to view the final markdown."))
-	} else if m.inFlight {
-		footerParts = append(footerParts, fmt.Sprintf("%s Orchestration is running", m.spin.View()))
-	}
-	if m.err != "" && m.err != m.currentFailureSummary() {
-		footerParts = append(footerParts, "", m.errorStyle.Render(m.err))
+	headerHeight := lipgloss.Height(m.monitorHeaderBlock())
+	footerHeight := lipgloss.Height(m.monitorFooterBlock())
+	statusChrome := m.chrome.panelChromeHeight("Agent Status", m.layout.monitorStatusW, toneInfo)
+
+	if m.layout.monitorSplit {
+		height := m.layout.viewportHeight(headerHeight, footerHeight, statusChrome, 4, minTallViewportHeight)
+		m.statusViewport.SetHeight(height)
+		m.timelineView.SetHeight(height)
+	} else {
+		timelineChrome := m.chrome.panelChromeHeight("Timeline", m.layout.monitorTimelineW, toneWarning)
+		statusHeight, timelineHeight := m.layout.stackedViewportHeights(headerHeight, footerHeight, max(statusChrome, timelineChrome), 5, minTallViewportHeight)
+		m.statusViewport.SetHeight(statusHeight)
+		m.timelineView.SetHeight(timelineHeight)
 	}
 
-	panelWidth := max(30, m.width/2-3)
-	panelChrome := lipgloss.Height(m.renderPanel("Agent Status", "", panelWidth, "81"))
-	available := m.height - lipgloss.Height(headerBlock) - lipgloss.Height(strings.Join(footerParts, "\n")) - panelChrome - 4
-	if available < 3 {
-		available = 3
-	}
-
-	m.statusViewport.SetHeight(available)
-	m.timelineView.SetHeight(available)
 	m.statusViewport.SetContent(m.statusContent())
 	m.timelineView.SetContent(m.timelineContent())
 	m.timelineView.GotoBottom()
 }
 
 func (m *Model) syncResultsViewportLayout() {
-	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.resultViewport.Width() == 0 {
+	if m.width == 0 || m.height == 0 || m.run.ID == "" || m.layout.contentWidth == 0 {
 		return
 	}
-
+	headerHeight := lipgloss.Height(m.resultsTopBlock())
+	panelChrome := m.chrome.panelChromeHeight("Final Markdown", m.layout.contentWidth, toneSuccess)
+	m.resultViewport.SetHeight(m.layout.viewportHeight(headerHeight, 0, panelChrome, 4, minViewportHeight))
 	m.resultViewport.SetContent(m.resultContent())
-	bestHeight := 2
-	maxHeight := max(2, m.height)
-	for candidate := maxHeight; candidate >= 2; candidate-- {
-		m.resultViewport.SetHeight(candidate)
-		if lipgloss.Height(m.viewResults()) <= m.height {
-			bestHeight = candidate
-			break
-		}
-	}
-	m.resultViewport.SetHeight(bestHeight)
 }
 
 func (m Model) currentFailureSummary() string {
@@ -931,21 +907,19 @@ func (m Model) statusContent() string {
 	for i, agent := range m.run.AllAgents() {
 		status := m.run.AgentStatuses[agent.ID]
 		lines = append(lines,
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				m.valueStyle.Bold(true).Render(agent.Name),
+			lipgloss.JoinHorizontal(
+				lipgloss.Center,
+				m.chrome.value.Copy().Bold(true).Render(agent.Name),
 				" ",
-				m.providerBadge(agent.Provider),
+				m.chrome.providerBadge(agent.Provider),
 				" ",
-				m.stateBadge(status.State),
+				m.chrome.stateBadge(status.State),
 			),
-			"  "+m.renderLabeledLine("Step", emptyFallback(status.LastStep, "No step yet")),
-			"  "+m.renderLabeledLine("Summary", emptyFallback(status.Summary, "No updates yet")),
-		)
-		lines = append(lines,
-			"",
+			"  "+m.chrome.labeledLine("Step", emptyFallback(humanizeToken(status.LastStep), "No step yet")),
+			"  "+m.chrome.labeledLine("Summary", emptyFallback(status.Summary, "No updates yet")),
 		)
 		if i < len(m.run.AllAgents())-1 {
-			lines = append(lines, m.dividerStyle.Render(strings.Repeat("─", max(12, m.statusViewport.Width()-6))), "")
+			lines = append(lines, "", m.chrome.divider.Render(strings.Repeat("─", max(12, m.statusViewport.Width()-6))), "")
 		}
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
@@ -956,17 +930,17 @@ func (m Model) timelineContent() string {
 		return ""
 	}
 	lines := []string{}
-	for i, entry := range m.run.Timeline {
-		lines = append(lines,
-			lipgloss.JoinHorizontal(lipgloss.Top,
-				m.mutedStyle.Render(entry.Timestamp.Format(timeFormat)),
-				"  ",
-				m.valueStyle.Render(entry.Text),
-			),
-		)
-		if i < len(m.run.Timeline)-1 {
-			lines = append(lines, m.dividerStyle.Render(strings.Repeat("─", max(12, m.timelineView.Width()-6))))
+	for _, entry := range m.run.Timeline {
+		text := strings.TrimSpace(entry.Text)
+		if text == "" {
+			continue
 		}
+		lines = append(lines, lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.chrome.muted.Render(entry.Timestamp.Format(timeFormat)),
+			"  ",
+			m.chrome.value.Render(text),
+		))
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
@@ -992,86 +966,6 @@ func orderedStatusesForView(run model.RunState) []model.AgentStatus {
 		}
 	}
 	return statuses
-}
-
-func (m Model) header(title, subtitle string) string {
-	parts := []string{
-		m.headerTitleStyle.Render(title),
-		m.headerSubtitleStyle.Render(subtitle),
-	}
-	if m.inFlight {
-		parts = append(parts, m.infoStyle.Render(m.spin.View()))
-	}
-	return m.headerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, parts...))
-}
-
-func (m Model) renderPanel(title, content string, width int, borderColor string) string {
-	color := lipgloss.Color(borderColor)
-	titleBlock := m.panelTitleStyle.Background(color).Render(title)
-	dividerWidth := max(8, width-lipgloss.Width(title)-6)
-	divider := m.dividerStyle.Foreground(color).Render(strings.Repeat("─", dividerWidth))
-	body := lipgloss.JoinVertical(lipgloss.Left, lipgloss.JoinHorizontal(lipgloss.Center, titleBlock, " ", divider), content)
-	return m.panelStyle.BorderForeground(color).Width(width).Render(body)
-}
-
-func (m Model) renderDivider(label string) string {
-	labelBlock := m.infoStyle.Render(strings.ToUpper(strings.TrimSpace(label)))
-	lineWidth := max(8, m.width-lipgloss.Width(labelBlock)-8)
-	return lipgloss.JoinHorizontal(lipgloss.Center, labelBlock, " ", m.dividerStyle.Render(strings.Repeat("─", lineWidth)))
-}
-
-func (m Model) renderLabeledLine(label, value string) string {
-	return lipgloss.JoinHorizontal(lipgloss.Center, m.labelStyle.Render(label+":"), " ", m.valueStyle.Render(value))
-}
-
-func (m Model) metaBadge(label, value string) string {
-	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252")).
-		Background(lipgloss.Color("60")).
-		Padding(0, 1).
-		Render(fmt.Sprintf("%s %s", strings.ToUpper(label), value))
-}
-
-func (m Model) providerBadge(provider model.ProviderID) string {
-	color := lipgloss.Color("81")
-	switch provider {
-	case model.ProviderClaude:
-		color = lipgloss.Color("214")
-	case model.ProviderGemini:
-		color = lipgloss.Color("42")
-	}
-	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("16")).
-		Background(color).
-		Bold(true).
-		Padding(0, 1).
-		Render(model.ProviderDisplayName(provider))
-}
-
-func (m Model) statusBadge(status string) string {
-	color := lipgloss.Color("240")
-	switch status {
-	case "ready", string(model.RunStatusComplete), string(model.RunStatusConverged), string(model.AgentStateDone):
-		color = lipgloss.Color("42")
-	case "available", string(model.RunStatusWaiting), string(model.AgentStateWaitingOnExperts), string(model.AgentStateWaitingOnManager):
-		color = lipgloss.Color("81")
-	case string(model.RunStatusRunning), string(model.AgentStateStarting), string(model.AgentStateQueued), string(model.AgentStateParsing):
-		color = lipgloss.Color("214")
-	case "missing", string(model.RunStatusFailed), string(model.AgentStateError):
-		color = lipgloss.Color("203")
-	case string(model.AgentStateSkipped):
-		color = lipgloss.Color("244")
-	}
-	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("16")).
-		Background(color).
-		Bold(true).
-		Padding(0, 1).
-		Render(strings.ToUpper(status))
-}
-
-func (m Model) stateBadge(state model.AgentState) string {
-	return m.statusBadge(string(state))
 }
 
 func emptyFallback(value, fallback string) string {

@@ -23,6 +23,7 @@ type NewRunOptions struct {
 	CWD             string
 	OutputRoot      string
 	MaxRounds       int
+	MergeStrategy   model.MergeStrategy
 	ManagerProvider model.ProviderID
 	ExpertProviders []model.ProviderID
 }
@@ -77,6 +78,9 @@ func (e *Engine) NewRun(options NewRunOptions) (model.RunState, error) {
 	if options.MaxRounds <= 0 {
 		options.MaxRounds = 5
 	}
+	if options.MergeStrategy == "" {
+		options.MergeStrategy = model.MergeStrategyTogether
+	}
 	absCWD, err := filepath.Abs(options.CWD)
 	if err != nil {
 		return model.RunState{}, err
@@ -118,7 +122,7 @@ func (e *Engine) NewRun(options NewRunOptions) (model.RunState, error) {
 		})
 	}
 
-	run := model.NewRunState(runID, absCWD, runDir, options.MaxRounds, manager, experts)
+	run := model.NewRunState(runID, absCWD, runDir, options.MaxRounds, options.MergeStrategy, manager, experts)
 	store, err := NewStore(run.OutputDir)
 	if err != nil {
 		return model.RunState{}, err
