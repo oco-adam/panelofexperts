@@ -524,6 +524,7 @@ func (m Model) viewBrief() string {
 	briefPanel := m.chrome.panelBlock("Brief Snapshot", m.briefViewport.View(), m.layout.contentWidth, toneInfo)
 	blocks := []string{
 		m.briefHeaderBlock(),
+		m.briefGroundingBlock(),
 		briefPanel,
 		m.briefFooterBlock(),
 	}
@@ -776,6 +777,37 @@ func (m Model) briefContent() string {
 	return strings.Join(parts, "\n")
 }
 
+func (m Model) briefGroundingBlock() string {
+	if m.run.ID == "" {
+		return ""
+	}
+	lines := []string{}
+	switch m.run.RepoGrounding.Status {
+	case model.RepoGroundingReady:
+		if summary := strings.TrimSpace(m.run.RepoGrounding.Summary); summary != "" {
+			lines = append(lines, summary)
+		}
+		for _, fact := range limitGroundingFacts(m.run.RepoGrounding.Facts, 6) {
+			line := fmt.Sprintf("%s: %s", fact.Label, fact.Value)
+			if len(fact.EvidencePaths) > 0 {
+				line += fmt.Sprintf(" (%s)", strings.Join(limitStrings(fact.EvidencePaths, 2), ", "))
+			}
+			lines = append(lines, line)
+		}
+	case model.RepoGroundingFailed:
+		lines = append(lines, emptyFallback(m.run.RepoGrounding.Summary, "Repo grounding failed"))
+	default:
+		return ""
+	}
+	if len(m.run.RepoGrounding.Unknowns) > 0 {
+		lines = append(lines, "", "Unknowns:")
+		for _, item := range limitStrings(m.run.RepoGrounding.Unknowns, 2) {
+			lines = append(lines, "- "+item)
+		}
+	}
+	return m.chrome.panelBlock("Repo Grounding", strings.Join(lines, "\n"), m.layout.contentWidth, toneSecondary)
+}
+
 func (m *Model) syncBriefInput() {
 	if question, _, _ := m.activeBriefQuestion(); question != "" {
 		m.input.Placeholder = "Answer the current manager question"
@@ -800,9 +832,31 @@ func (m *Model) syncBriefViewportLayout() {
 	}
 	headerHeight := lipgloss.Height(m.briefHeaderBlock())
 	footerHeight := lipgloss.Height(m.briefFooterBlock())
+	groundingHeight := 0
+	if grounding := m.briefGroundingBlock(); grounding != "" {
+		groundingHeight = lipgloss.Height(grounding)
+	}
 	panelChrome := m.chrome.panelChromeHeight("Brief Snapshot", m.layout.contentWidth, toneInfo)
-	m.briefViewport.SetHeight(m.layout.viewportHeight(headerHeight, footerHeight, panelChrome, 5, 1))
+	spacing := 5
+	if groundingHeight > 0 {
+		spacing += groundingHeight + 2
+	}
+	m.briefViewport.SetHeight(m.layout.viewportHeight(headerHeight, footerHeight, panelChrome, spacing, 1))
 	m.briefViewport.SetContent(m.briefContent())
+}
+
+func limitGroundingFacts(facts []model.GroundingFact, limit int) []model.GroundingFact {
+	if len(facts) <= limit {
+		return facts
+	}
+	return facts[:limit]
+}
+
+func limitStrings(items []string, limit int) []string {
+	if len(items) <= limit {
+		return items
+	}
+	return items[:limit]
 }
 
 func (m *Model) syncMonitorViewportLayout() {

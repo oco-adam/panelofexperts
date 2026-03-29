@@ -310,6 +310,47 @@ func TestBriefViewFitsShortWindowAndKeepsReplyVisible(t *testing.T) {
 	}
 }
 
+func TestBriefViewShowsRepoGroundingPanelWhenReady(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	m = updated.(Model)
+
+	m.screen = screenBrief
+	m.run = model.NewRunState(
+		"run-brief",
+		tempDir,
+		OutputRoot(tempDir),
+		5,
+		model.MergeStrategyTogether,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{},
+	)
+	m.run.RepoGrounding = model.RepoGrounding{
+		Status:        model.RepoGroundingReady,
+		WorkspaceRoot: tempDir,
+		Summary:       "Go workspace using Bubble Tea.",
+		Facts: []model.GroundingFact{
+			{Category: "framework", Label: "Frameworks", Value: "Bubble Tea, Bubbles, Lip Gloss", EvidencePaths: []string{"go.mod"}},
+		},
+		Unknowns:     []string{},
+		ScannedFiles: []string{"go.mod"},
+	}
+	m.refreshRunViews()
+
+	view := stripANSI(m.View().Content)
+	for _, expected := range []string{"Repo Grounding", "Go workspace using Bubble Tea.", "Frameworks: Bubble Tea, Bubbles, Lip Gloss"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("expected brief view to contain %q, got:\n%s", expected, view)
+		}
+	}
+}
+
 func TestMonitorViewAutoScrollsTimelineAndFitsWindow(t *testing.T) {
 	tempDir := t.TempDir()
 	engine := orchestrator.NewEngine(

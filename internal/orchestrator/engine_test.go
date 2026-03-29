@@ -176,6 +176,8 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 	}
 
 	for _, rel := range []string{
+		"repo-grounding.json",
+		"repo-grounding.md",
 		"brief.json",
 		"brief.md",
 		"proposal-v001.json",
@@ -527,8 +529,14 @@ func TestUpdateBriefAllowsManagerRepositoryInspection(t *testing.T) {
 			if request.Metadata["workspace_access"] == "none" {
 				t.Fatalf("expected brief request to keep workspace access enabled")
 			}
-			if !strings.Contains(request.Prompt, "You may inspect the repository") {
-				t.Fatalf("expected brief prompt to allow repository inspection, got:\n%s", request.Prompt)
+			for _, expected := range []string{
+				"Repo grounding has already been collected",
+				"Inspect repository files only when the grounding leaves a real gap",
+				"Repo grounding:",
+			} {
+				if !strings.Contains(request.Prompt, expected) {
+					t.Fatalf("expected brief prompt to include %q, got:\n%s", expected, request.Prompt)
+				}
 			}
 			return mustMarshal(t, model.Brief{
 				ProjectTitle:   "Panel Test Project",
@@ -557,6 +565,134 @@ func TestUpdateBriefAllowsManagerRepositoryInspection(t *testing.T) {
 
 	if _, err := engine.UpdateBrief(context.Background(), run, "Build the app", nil); err != nil {
 		t.Fatalf("update brief: %v", err)
+	}
+}
+
+func TestUpdateBriefWritesAndReusesRepoGrounding(t *testing.T) {
+	tempDir := t.TempDir()
+	writeGroundingFixture(t, tempDir)
+
+	prompts := []string{}
+	engine := NewEngine(fakeProvider{
+		id: model.ProviderCodex,
+		run: func(request model.Request) (string, error) {
+			prompts = append(prompts, request.Prompt)
+			if !strings.Contains(request.Prompt, "Bubble Tea") {
+				t.Fatalf("expected prompt to include Bubble Tea grounding, got:\n%s", request.Prompt)
+			}
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Panel Test Project",
+				IntentSummary:  "Build the planning workflow.",
+				TaskKind:       model.TaskKindPlan,
+				TargetFilePath: "",
+				Goals:          []string{"Plan the app"},
+				Constraints:    []string{"Read-only"},
+				ReadyToStart:   true,
+				OpenQuestions:  []string{},
+				ManagerNotes:   "Ready for expert review.",
+			}), nil
+		},
+	})
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderCodex},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+
+	run, err = engine.UpdateBrief(context.Background(), run, "Build the app", nil)
+	if err != nil {
+		t.Fatalf("first update brief: %v", err)
+	}
+	if run.RepoGrounding.Status != model.RepoGroundingReady {
+		t.Fatalf("expected ready repo grounding, got %+v", run.RepoGrounding)
+	}
+	if len(run.RepoGrounding.Facts) == 0 {
+		t.Fatalf("expected repo grounding facts to be collected, got %+v", run.RepoGrounding)
+	}
+	for _, rel := range []string{"repo-grounding.json", "repo-grounding.md"} {
+		if _, err := os.Stat(filepath.Join(run.OutputDir, rel)); err != nil {
+			t.Fatalf("expected artifact %s: %v", rel, err)
+		}
+	}
+
+	firstSummary := run.RepoGrounding.Summary
+	run, err = engine.UpdateBrief(context.Background(), run, "Clarify the plan", nil)
+	if err != nil {
+		t.Fatalf("second update brief: %v", err)
+	}
+	if run.RepoGrounding.Summary != firstSummary {
+		t.Fatalf("expected grounding summary to be reused, got %q want %q", run.RepoGrounding.Summary, firstSummary)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("expected two brief prompts, got %d", len(prompts))
+	}
+}
+
+func TestUpdateBriefRejectsRepoAnswerableManagerQuestions(t *testing.T) {
+	tempDir := t.TempDir()
+	writeGroundingFixture(t, tempDir)
+
+	attempts := 0
+	engine := NewEngine(fakeProvider{
+		id: model.ProviderCodex,
+		run: func(request model.Request) (string, error) {
+			attempts++
+			if attempts == 2 && !strings.Contains(request.Prompt, "Questions to remove or replace:") {
+				t.Fatalf("expected retry prompt to explain grounded question rejection, got:\n%s", request.Prompt)
+			}
+			if attempts < 3 {
+				return mustMarshal(t, model.Brief{
+					ProjectTitle:   "Panel Test Project",
+					IntentSummary:  "Build the planning workflow.",
+					TaskKind:       model.TaskKindPlan,
+					TargetFilePath: "",
+					Goals:          []string{"Plan the app"},
+					Constraints:    []string{"Read-only"},
+					ReadyToStart:   false,
+					OpenQuestions:  []string{"What TUI framework does the app currently use?"},
+					ManagerNotes:   "Need a repo fact from the user.",
+				}), nil
+			}
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Panel Test Project",
+				IntentSummary:  "Build the planning workflow.",
+				TaskKind:       model.TaskKindPlan,
+				TargetFilePath: "",
+				Goals:          []string{"Plan the app"},
+				Constraints:    []string{"Read-only"},
+				ReadyToStart:   true,
+				OpenQuestions:  []string{},
+				ManagerNotes:   "Ready for expert review.",
+			}), nil
+		},
+	})
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderCodex},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+
+	run, err = engine.UpdateBrief(context.Background(), run, "Build the app", nil)
+	if err != nil {
+		t.Fatalf("update brief: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected grounded-question retries, got %d attempts", attempts)
+	}
+	if len(run.Brief.OpenQuestions) != 0 {
+		t.Fatalf("expected grounded question to be removed before success, got %+v", run.Brief.OpenQuestions)
 	}
 }
 
@@ -852,4 +988,33 @@ func mustMarshal(t *testing.T, value any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(data)
+}
+
+func writeGroundingFixture(t *testing.T, root string) {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(root, "go.mod"), `module panelofexperts
+
+go 1.25.1
+
+require (
+	charm.land/bubbles/v2 v2.1.0
+	charm.land/bubbletea/v2 v2.0.2
+	charm.land/lipgloss/v2 v2.0.2
+)
+`)
+	mustWriteFile(t, filepath.Join(root, "README.md"), "# Panel of Experts\n")
+	mustWriteFile(t, filepath.Join(root, "cmd", "poe", "main.go"), "package main\nfunc main() {}\n")
+	mustWriteFile(t, filepath.Join(root, "internal", "ui", "model_test.go"), "package ui\n")
+	mustWriteFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"), "name: ci\n")
+	mustWriteFile(t, filepath.Join(root, ".goreleaser.yaml"), "project_name: poe\n")
+}
+
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }

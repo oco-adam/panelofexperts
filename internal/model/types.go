@@ -185,6 +185,30 @@ type ManagerTurn struct {
 	BriefSummary string    `json:"brief_summary"`
 }
 
+type RepoGroundingStatus string
+
+const (
+	RepoGroundingPending RepoGroundingStatus = "pending"
+	RepoGroundingReady   RepoGroundingStatus = "ready"
+	RepoGroundingFailed  RepoGroundingStatus = "failed"
+)
+
+type GroundingFact struct {
+	Category      string   `json:"category"`
+	Label         string   `json:"label"`
+	Value         string   `json:"value"`
+	EvidencePaths []string `json:"evidence_paths"`
+}
+
+type RepoGrounding struct {
+	Status        RepoGroundingStatus `json:"status"`
+	WorkspaceRoot string              `json:"workspace_root"`
+	Summary       string              `json:"summary"`
+	Facts         []GroundingFact     `json:"facts"`
+	Unknowns      []string            `json:"unknowns"`
+	ScannedFiles  []string            `json:"scanned_files"`
+}
+
 type Brief struct {
 	ProjectTitle   string   `json:"project_title"`
 	IntentSummary  string   `json:"intent_summary"`
@@ -259,6 +283,7 @@ type RunState struct {
 	Experts           []AgentConfig          `json:"experts"`
 	AgentStatuses     map[string]AgentStatus `json:"agent_statuses"`
 	Timeline          []TimelineEntry        `json:"timeline"`
+	RepoGrounding     RepoGrounding          `json:"repo_grounding"`
 	Brief             Brief                  `json:"brief"`
 	ManagerTurns      []ManagerTurn          `json:"manager_turns"`
 	Rounds            []RoundState           `json:"rounds"`
@@ -275,20 +300,27 @@ func NewRunState(id, cwd, outputDir string, maxRounds int, mergeStrategy MergeSt
 		mergeStrategy = MergeStrategyTogether
 	}
 	run := RunState{
-		ID:             id,
-		ProjectTitle:   defaultProjectTitle(cwd),
-		CWD:            cwd,
-		OutputDir:      outputDir,
-		MaxRounds:      maxRounds,
-		MergeStrategy:  mergeStrategy,
-		Status:         RunStatusDrafting,
-		CurrentPhase:   "setup",
-		StartedAt:      now,
-		UpdatedAt:      now,
-		Manager:        manager,
-		Experts:        slices.Clone(experts),
-		AgentStatuses:  map[string]AgentStatus{},
-		Timeline:       []TimelineEntry{},
+		ID:            id,
+		ProjectTitle:  defaultProjectTitle(cwd),
+		CWD:           cwd,
+		OutputDir:     outputDir,
+		MaxRounds:     maxRounds,
+		MergeStrategy: mergeStrategy,
+		Status:        RunStatusDrafting,
+		CurrentPhase:  "setup",
+		StartedAt:     now,
+		UpdatedAt:     now,
+		Manager:       manager,
+		Experts:       slices.Clone(experts),
+		AgentStatuses: map[string]AgentStatus{},
+		Timeline:      []TimelineEntry{},
+		RepoGrounding: RepoGrounding{
+			Status:        RepoGroundingPending,
+			WorkspaceRoot: cwd,
+			Facts:         []GroundingFact{},
+			Unknowns:      []string{},
+			ScannedFiles:  []string{},
+		},
 		ManagerTurns:   []ManagerTurn{},
 		Rounds:         []RoundState{},
 		StopReason:     StopReasonNotStarted,

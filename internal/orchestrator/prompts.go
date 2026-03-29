@@ -78,8 +78,9 @@ func buildBriefPrompt(run model.RunState, userMessage string) string {
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for a planning brief.
 
-Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
-Inspect only the highest-signal files needed to clarify the brief; avoid broad exploration.
+Stay in planning mode. Repo grounding has already been collected for %s and must be treated as the baseline workspace context.
+Use repo grounding first. Inspect repository files only when the grounding leaves a real gap, and do not edit files.
+Do not ask the user for repo facts already covered by repo grounding or obvious high-signal files. Only ask about intent, preferences, constraints, or tradeoffs the repo cannot answer.
 Do not attempt to exit planning mode or call any write/edit/create tool.
 Use the latest user request and any existing brief context to set:
 - project_title
@@ -99,23 +100,26 @@ Otherwise set task_kind to "plan" and target_file_path to an empty string.
 Target repository path for the later discussion: %s
 Task kind hint from the app: %s
 Target file hint from the app: %s
+Repo grounding: %s
 Existing brief: %s
 Previous manager turns: %s
 Latest user request: %s
-	`, run.CWD, run.CWD, hint.Kind, hint.TargetFilePath, mustCompactJSON(run.Brief), mustCompactJSON(run.ManagerTurns), strings.TrimSpace(userMessage)))
+	`, run.CWD, run.CWD, hint.Kind, hint.TargetFilePath, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(run.ManagerTurns), strings.TrimSpace(userMessage)))
 }
 
 func buildInitialProposalPrompt(run model.RunState) string {
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for an initial planning proposal.
 
-Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Stay in planning mode. Repo grounding has already been collected for %s and must be treated as the baseline workspace context.
+Use repo grounding first. Inspect repository files only when the grounding leaves a real gap, and do not edit files.
 Do not attempt to exit planning mode or call any write/edit/create tool.
 Produce a concrete proposal that is specific enough for expert review.
 
+Repo grounding: %s
 Brief: %s
 Expert panel: %s
-`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(run.Experts)))
+`, run.CWD, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(run.Experts)))
 }
 
 func buildExpertReviewPrompt(run model.RunState, proposal model.Proposal, expert model.AgentConfig) string {
@@ -123,30 +127,34 @@ func buildExpertReviewPrompt(run model.RunState, proposal model.Proposal, expert
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for an expert review.
 
-Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Stay in planning mode. Repo grounding has already been collected for %s and must be treated as the baseline workspace context.
+Use repo grounding first. Inspect repository files only when the grounding leaves a real gap, and do not edit files.
 Do not attempt to exit planning mode or call any write/edit/create tool.
 Your review lens: %s
 Review the current proposal critically but constructively. Focus on your lens and flag obvious high-risk issues.
 
+Repo grounding: %s
 Brief: %s
 Current proposal: %s
-`, run.CWD, lens, mustCompactJSON(run.Brief), mustCompactJSON(proposal)))
+`, run.CWD, lens, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(proposal)))
 }
 
 func buildMergePrompt(run model.RunState, current model.Proposal, review model.ExpertReview, expert model.AgentConfig) string {
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for an updated planning proposal.
 
-Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Stay in planning mode. Repo grounding has already been collected for %s and must be treated as the baseline workspace context.
+Use repo grounding first. Inspect repository files only when the grounding leaves a real gap, and do not edit files.
 Do not attempt to exit planning mode or call any write/edit/create tool.
 Consider exactly one expert review at a time. Incorporate useful feedback, reject weak feedback, and keep the proposal coherent.
 If the review does not justify a change, you may return the proposal unchanged. Set converged to true only when the proposal is materially complete and stable.
 
+Repo grounding: %s
 Brief: %s
 Current proposal: %s
 Expert reviewer: %s
 Expert review: %s
-	`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(map[string]any{
+	`, run.CWD, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(map[string]any{
 		"name": expert.Name,
 		"lens": expert.Lens,
 	}), mustCompactJSON(review)))
@@ -162,15 +170,17 @@ func buildCombinedMergePrompt(run model.RunState, current model.Proposal, review
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for an updated planning proposal.
 
-Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Stay in planning mode. Repo grounding has already been collected for %s and must be treated as the baseline workspace context.
+Use repo grounding first. Inspect repository files only when the grounding leaves a real gap, and do not edit files.
 Do not attempt to exit planning mode or call any write/edit/create tool.
 Consider the expert review bundle together. Reconcile conflicts, preserve strong feedback, reject weak or duplicative suggestions, and keep the proposal coherent.
 If the review bundle does not justify a change, you may return the proposal unchanged. Set converged to true only when the proposal is materially complete and stable.
 
+Repo grounding: %s
 Brief: %s
 Current proposal: %s
 Expert review bundle: %s
-	`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(reviews)))
+	`, run.CWD, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(reviews)))
 }
 
 func mustJSON(value any) string {

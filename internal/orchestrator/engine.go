@@ -164,8 +164,20 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 	run.CurrentPhase = "manager_brief"
 	run.StopReason = model.StopReasonAwaitingUser
 	run.FailureSummary = ""
+	if run.RepoGrounding.Status != model.RepoGroundingReady || len(run.RepoGrounding.Facts) == 0 {
+		run.WaitingSummary = "Collecting repo grounding"
+	} else {
+		run.WaitingSummary = "Waiting on manager brief update"
+	}
+	e.touch(&run)
+	notify()
+
+	if err := e.prepareRepoGrounding(&run, store, notify); err != nil {
+		return run, err
+	}
 	run.WaitingSummary = "Waiting on manager brief update"
 	e.touch(&run)
+	_ = store.SaveState(run)
 	notify()
 
 	progressCh := make(chan model.ProgressEvent, 32)
@@ -178,6 +190,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		}
 	}()
 
+	hint := inferTaskHint(run, userMessage)
 	brief, runErr := e.runManagerBrief(ctx, provider, model.Request{
 		RunID:      run.ID,
 		Round:      0,
@@ -189,7 +202,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		JSONSchema: briefSchema,
 		OutputKind: "brief",
 		Timeout:    managerBriefTimeout,
-	}, progressCh)
+	}, hint, run.RepoGrounding, progressCh)
 	close(progressCh)
 	wg.Wait()
 	if runErr != nil {
@@ -200,7 +213,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		return run, runErr
 	}
 
-	brief = normalizeBrief(brief, inferTaskHint(run, userMessage))
+	brief = normalizeBrief(brief, hint)
 
 	run.Brief = brief
 	if strings.TrimSpace(brief.ProjectTitle) != "" {
@@ -261,9 +274,21 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 	run.Status = model.RunStatusRunning
 	run.CurrentPhase = "manager_initial_proposal"
 	run.FailureSummary = ""
-	run.WaitingSummary = "Waiting on manager initial proposal"
+	if run.RepoGrounding.Status != model.RepoGroundingReady || len(run.RepoGrounding.Facts) == 0 {
+		run.WaitingSummary = "Collecting repo grounding"
+	} else {
+		run.WaitingSummary = "Waiting on manager initial proposal"
+	}
 	run.CurrentRound = 1
 	e.touch(&run)
+	notify()
+
+	if err := e.prepareRepoGrounding(&run, store, notify); err != nil {
+		return run, err
+	}
+	run.WaitingSummary = "Waiting on manager initial proposal"
+	e.touch(&run)
+	_ = store.SaveState(run)
 	notify()
 
 	proposal, version, err := e.runManagerProposal(ctx, managerProvider, &run, store, updateProgress, buildInitialProposalPrompt(run), 1)
@@ -560,16 +585,20 @@ func (e *Engine) runExpertReview(
 	request model.Request,
 	progress chan<- model.ProgressEvent,
 ) (model.ExpertReview, error) {
-	return runStructuredRequest[model.ExpertReview](ctx, provider, request, progress, buildExpertRetryRequest)
+	return runStructuredRequest[model.ExpertReview](ctx, provider, request, progress, nil, buildExpertRetryRequest)
 }
 
 func (e *Engine) runManagerBrief(
 	ctx context.Context,
 	provider providers.AgentProvider,
 	request model.Request,
+	hint taskHint,
+	grounding model.RepoGrounding,
 	progress chan<- model.ProgressEvent,
 ) (model.Brief, error) {
-	return runStructuredRequest[model.Brief](ctx, provider, request, progress, buildManagerRetryRequest)
+	return runStructuredRequest[model.Brief](ctx, provider, request, progress, func(brief model.Brief) error {
+		return validateGroundedQuestions(normalizeBrief(brief, hint), grounding)
+	}, buildManagerRetryRequest)
 }
 
 func (e *Engine) runManagerProposal(
@@ -602,7 +631,7 @@ func (e *Engine) runManagerProposal(
 		JSONSchema: proposalSchema,
 		OutputKind: "proposal",
 		Timeout:    managerProposalTimeout,
-	}, progressCh, buildManagerRetryRequest)
+	}, progressCh, nil, buildManagerRetryRequest)
 	close(progressCh)
 	wg.Wait()
 	if err != nil {
@@ -629,6 +658,36 @@ func (e *Engine) getProvider(providerID model.ProviderID) (providers.AgentProvid
 		return nil, fmt.Errorf("provider %s is not configured", providerID)
 	}
 	return provider, nil
+}
+
+func (e *Engine) prepareRepoGrounding(run *model.RunState, store *Store, notify func()) error {
+	previous := run.RepoGrounding
+	grounding, err := ensureRepoGrounding(run.CWD, run.RepoGrounding)
+	run.RepoGrounding = grounding
+	_ = store.SaveJSON("repo-grounding.json", run.RepoGrounding)
+	_ = store.SaveText("repo-grounding.md", render.RenderRepoGroundingMarkdown(run.RepoGrounding))
+	if err != nil {
+		run.FailureSummary = ""
+		run.WaitingSummary = grounding.Summary
+		e.touch(run)
+		_ = store.SaveState(*run)
+		if notify != nil {
+			notify()
+		}
+		return err
+	}
+	if previous.Status != model.RepoGroundingReady ||
+		len(previous.Facts) == 0 ||
+		filepath.Clean(strings.TrimSpace(previous.WorkspaceRoot)) != filepath.Clean(strings.TrimSpace(grounding.WorkspaceRoot)) {
+		e.appendTimeline(run, run.CurrentRound, "", "Repo grounding ready")
+	}
+	run.FailureSummary = ""
+	e.touch(run)
+	_ = store.SaveState(*run)
+	if notify != nil {
+		notify()
+	}
+	return nil
 }
 
 func (e *Engine) applyProgress(run *model.RunState, event model.ProgressEvent) {
@@ -909,6 +968,7 @@ func runStructuredRequest[T any](
 	provider providers.AgentProvider,
 	request model.Request,
 	progress chan<- model.ProgressEvent,
+	validate func(T) error,
 	buildRetryRequest func(model.Request, int, error) model.Request,
 ) (T, error) {
 	var zero T
@@ -926,9 +986,17 @@ func runStructuredRequest[T any](
 		if err == nil {
 			value, parseErr := parseProviderOutput[T](provider.ID(), result.Stdout)
 			if parseErr == nil {
-				return value, nil
+				if validate == nil {
+					return value, nil
+				}
+				if validateErr := validate(value); validateErr == nil {
+					return value, nil
+				} else {
+					err = validateErr
+				}
+			} else {
+				err = parseErr
 			}
-			err = parseErr
 		}
 		lastErr = err
 		if attempt == maxAgentAttempts || !shouldRetryRequest(err) {
@@ -941,6 +1009,10 @@ func runStructuredRequest[T any](
 func shouldRetryRequest(err error) bool {
 	if err == nil {
 		return false
+	}
+	var invalid invalidGroundedQuestionsError
+	if errors.As(err, &invalid) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "timed out") ||
@@ -1002,6 +1074,10 @@ func buildManagerRetryRequest(request model.Request, attempt int, err error) mod
 	retryRequest := request
 	retryRequest.Metadata = cloneMetadata(request.Metadata)
 	retryRequest.Prompt = strings.TrimSpace(request.Prompt + "\n\n" + retryInstruction(attempt, err))
+	var invalid invalidGroundedQuestionsError
+	if errors.As(err, &invalid) {
+		retryRequest.Prompt = strings.TrimSpace(retryRequest.Prompt + "\n\n" + invalid.retryInstruction())
+	}
 	return retryRequest
 }
 

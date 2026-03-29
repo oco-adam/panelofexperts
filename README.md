@@ -258,7 +258,9 @@ Controls:
 
 ### 2. Manager Brief
 
-The manager turns your request into a structured brief. You can:
+Before the manager asks follow-up questions, `poe` collects a repo-grounding snapshot from high-signal files in the current workspace and shows that summary in the brief screen. The manager is expected to use that grounding for repo facts and reserve follow-up questions for intent, scope, constraints, and tradeoffs the repo cannot answer.
+
+The manager then turns your request into a structured brief. You can:
 
 - answer manager follow-up questions
 - clarify scope
@@ -345,6 +347,8 @@ By default, run artifacts are written under:
 Each run gets its own timestamped directory. Common files include:
 
 - `state.json`: current run state
+- `repo-grounding.json`: structured repo grounding snapshot used by the manager and panel
+- `repo-grounding.md`: human-readable grounding summary shown in the brief flow
 - `brief.json`: structured brief
 - `brief.md`: rendered brief
 - `proposal-vNNN.json`: structured manager proposals

@@ -98,3 +98,32 @@ func TestRenderDeliverableMarkdownBuildsDocumentContent(t *testing.T) {
 		t.Fatalf("expected planning-only text to be removed, got:\n%s", output)
 	}
 }
+
+func TestRenderRepoGroundingMarkdownIncludesFactsAndFiles(t *testing.T) {
+	grounding := model.RepoGrounding{
+		Status:        model.RepoGroundingReady,
+		WorkspaceRoot: "/tmp/panelofexperts",
+		Summary:       "Go workspace using Bubble Tea.",
+		Facts: []model.GroundingFact{
+			{Category: "framework", Label: "Frameworks", Value: "Bubble Tea, Bubbles, Lip Gloss", EvidencePaths: []string{"go.mod"}},
+			{Category: "entrypoint", Label: "CLI Entrypoints", Value: "`cmd/poe`", EvidencePaths: []string{"cmd/poe/main.go"}},
+		},
+		Unknowns:     []string{"No release automation file was detected."},
+		ScannedFiles: []string{"go.mod", "cmd/poe/main.go"},
+	}
+
+	output := RenderRepoGroundingMarkdown(grounding)
+
+	for _, expected := range []string{
+		"# Repo Grounding",
+		"/tmp/panelofexperts",
+		"## Facts",
+		"Bubble Tea, Bubbles, Lip Gloss",
+		"## Unknowns",
+		"## Scanned Files",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected repo grounding markdown to contain %q, got:\n%s", expected, output)
+		}
+	}
+}
