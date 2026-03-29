@@ -37,8 +37,8 @@ const (
 	managerBriefTimeout        = 5 * time.Minute
 	managerProposalTimeout     = 5 * time.Minute
 	managerDeliverableTimeout  = 8 * time.Minute
-	defaultExpertReviewTimeout = 5 * time.Minute
-	claudeExpertReviewTimeout  = 5 * time.Minute
+	defaultExpertReviewTimeout = 10 * time.Minute
+	claudeExpertReviewTimeout  = defaultExpertReviewTimeout
 	promptOnlyRetryTimeout     = 90 * time.Second
 	maxAgentAttempts           = 3
 )

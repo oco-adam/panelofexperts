@@ -993,6 +993,9 @@ Capabilities: {
 }
 
 func TestReviewTimeoutForExpertsUsesConfiguredDurations(t *testing.T) {
+	if defaultExpertReviewTimeout != 10*time.Minute {
+		t.Fatalf("expected default expert timeout to be 10m, got %s", defaultExpertReviewTimeout)
+	}
 	if got := reviewTimeoutFor(model.ProviderClaude); got != claudeExpertReviewTimeout {
 		t.Fatalf("expected claude timeout %s, got %s", claudeExpertReviewTimeout, got)
 	}
