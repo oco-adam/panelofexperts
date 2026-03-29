@@ -102,33 +102,21 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 			case 2:
 				return mustMarshal(t, model.Proposal{
 					Title:               "Merged proposal",
-					Context:             "Context after architecture review.",
+					Context:             "Context after combined expert review.",
 					Goals:               []string{"Plan the app"},
 					Constraints:         []string{"Read-only"},
 					RecommendedPlan:     []model.PlanItem{{Title: "Refine", Details: "Add live status board."}},
 					Risks:               []string{"Need deterministic convergence"},
 					OpenQuestions:       []string{},
-					ConsensusNotes:      []string{"Architecture feedback merged"},
-					DeliverablePath:     "",
-					DeliverableMarkdown: "",
-					Converged:           false,
-					ChangeSummary:       "Merged architecture feedback.",
-				}), nil
-			default:
-				return mustMarshal(t, model.Proposal{
-					Title:               "Final proposal",
-					Context:             "Context after all reviews.",
-					Goals:               []string{"Plan the app"},
-					Constraints:         []string{"Read-only"},
-					RecommendedPlan:     []model.PlanItem{{Title: "Ship", Details: "Implement the approved plan."}},
-					Risks:               []string{"No major blockers"},
-					OpenQuestions:       []string{},
-					ConsensusNotes:      []string{"Panel converged"},
+					ConsensusNotes:      []string{"Combined expert feedback merged"},
 					DeliverablePath:     "",
 					DeliverableMarkdown: "",
 					Converged:           true,
-					ChangeSummary:       "Execution feedback merged; proposal converged.",
+					ChangeSummary:       "Merged expert bundle; proposal converged.",
 				}), nil
+			default:
+				t.Fatalf("unexpected proposal version %d", request.Version)
+				return "", nil
 			}
 		default:
 			t.Fatalf("unexpected output kind %q", request.OutputKind)
@@ -177,6 +165,9 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 	if len(run.Rounds) != 1 {
 		t.Fatalf("expected one completed round, got %d", len(run.Rounds))
 	}
+	if run.MergeStrategy != model.MergeStrategyTogether {
+		t.Fatalf("expected default merge strategy to be together, got %s", run.MergeStrategy)
+	}
 	if run.AgentStatuses["expert-1"].State != model.AgentStateDone {
 		t.Fatalf("expected expert-1 to be done after merge, got %s", run.AgentStatuses["expert-1"].State)
 	}
@@ -189,7 +180,6 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 		"brief.md",
 		"proposal-v001.json",
 		"proposal-v002.json",
-		"proposal-v003.json",
 		"reviews/round-1/expert-1.json",
 		"reviews/round-1/expert-2.json",
 		"final.md",
@@ -204,7 +194,7 @@ func TestEngineUpdateBriefAndRunDiscussion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read final markdown: %v", err)
 	}
-	if !strings.Contains(string(finalData), "# Final proposal") {
+	if !strings.Contains(string(finalData), "# Merged proposal") {
 		t.Fatalf("expected final markdown to contain final proposal title, got:\n%s", string(finalData))
 	}
 }
@@ -330,6 +320,9 @@ func TestEngineNewRunDefaultsMaxRoundsToFive(t *testing.T) {
 	if run.MaxRounds != 5 {
 		t.Fatalf("expected default max rounds to be 5, got %d", run.MaxRounds)
 	}
+	if run.MergeStrategy != model.MergeStrategyTogether {
+		t.Fatalf("expected default merge strategy to be together, got %s", run.MergeStrategy)
+	}
 }
 
 func TestRunDiscussionPublishesCompletedExpertStateBeforeAllReviewsFinish(t *testing.T) {
@@ -428,11 +421,11 @@ func TestRunExpertReviewRetriesWithoutWorkspaceAccess(t *testing.T) {
 		id: model.ProviderClaude,
 		run: func(request model.Request) (string, error) {
 			attempts = append(attempts, request)
-			if len(attempts) == 1 {
+			if len(attempts) < 3 {
 				return "", errors.New("claude timed out after 5m0s")
 			}
 			if request.Metadata["workspace_access"] != "none" {
-				t.Fatalf("expected retry to disable workspace access, got metadata=%v", request.Metadata)
+				t.Fatalf("expected final retry to disable workspace access, got metadata=%v", request.Metadata)
 			}
 			if !strings.Contains(request.Prompt, "Retry mode: do not inspect the repository or use tools.") {
 				t.Fatalf("expected retry prompt to include fallback instruction, got:\n%s", request.Prompt)
@@ -463,11 +456,230 @@ func TestRunExpertReviewRetriesWithoutWorkspaceAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run expert review: %v", err)
 	}
-	if len(attempts) != 2 {
-		t.Fatalf("expected two attempts, got %d", len(attempts))
+	if len(attempts) != 3 {
+		t.Fatalf("expected three attempts, got %d", len(attempts))
+	}
+	if !strings.Contains(attempts[1].Prompt, "Retry attempt 2 of 3.") {
+		t.Fatalf("expected second attempt to include strict retry instructions, got:\n%s", attempts[1].Prompt)
 	}
 	if review.Summary != "Recovered on retry." {
 		t.Fatalf("expected retry review to be returned, got %+v", review)
+	}
+}
+
+func TestUpdateBriefRetriesManagerRequests(t *testing.T) {
+	tempDir := t.TempDir()
+	attempts := 0
+
+	engine := NewEngine(fakeProvider{
+		id: model.ProviderCodex,
+		run: func(request model.Request) (string, error) {
+			attempts++
+			if request.OutputKind != "brief" {
+				t.Fatalf("unexpected output kind %q", request.OutputKind)
+			}
+			if attempts < 3 {
+				return "not-json", nil
+			}
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Panel Test Project",
+				IntentSummary:  "Build the planning workflow.",
+				TaskKind:       model.TaskKindPlan,
+				TargetFilePath: "",
+				Goals:          []string{"Plan the app"},
+				Constraints:    []string{"Read-only"},
+				ReadyToStart:   true,
+				OpenQuestions:  []string{},
+				ManagerNotes:   "Ready for expert review.",
+			}), nil
+		},
+	})
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderCodex},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+
+	run, err = engine.UpdateBrief(context.Background(), run, "Build the app", nil)
+	if err != nil {
+		t.Fatalf("update brief: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected three manager brief attempts, got %d", attempts)
+	}
+	if run.Brief.ProjectTitle != "Panel Test Project" {
+		t.Fatalf("expected brief to succeed after retries, got %+v", run.Brief)
+	}
+}
+
+func TestUpdateBriefAllowsManagerRepositoryInspection(t *testing.T) {
+	tempDir := t.TempDir()
+
+	engine := NewEngine(fakeProvider{
+		id: model.ProviderCodex,
+		run: func(request model.Request) (string, error) {
+			if request.Metadata["workspace_access"] == "none" {
+				t.Fatalf("expected brief request to keep workspace access enabled")
+			}
+			if !strings.Contains(request.Prompt, "You may inspect the repository") {
+				t.Fatalf("expected brief prompt to allow repository inspection, got:\n%s", request.Prompt)
+			}
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Panel Test Project",
+				IntentSummary:  "Build the planning workflow.",
+				TaskKind:       model.TaskKindPlan,
+				TargetFilePath: "",
+				Goals:          []string{"Plan the app"},
+				Constraints:    []string{"Read-only"},
+				ReadyToStart:   true,
+				OpenQuestions:  []string{},
+				ManagerNotes:   "Ready for expert review.",
+			}), nil
+		},
+	})
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderCodex},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+
+	if _, err := engine.UpdateBrief(context.Background(), run, "Build the app", nil); err != nil {
+		t.Fatalf("update brief: %v", err)
+	}
+}
+
+func TestRunDiscussionSequentialMergeStrategyPreservesPerReviewManagerPasses(t *testing.T) {
+	tempDir := t.TempDir()
+
+	handler := func(request model.Request) (string, error) {
+		switch request.OutputKind {
+		case "brief":
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Panel Test Project",
+				IntentSummary:  "Build the planning workflow.",
+				TaskKind:       model.TaskKindPlan,
+				TargetFilePath: "",
+				Goals:          []string{"Plan the app"},
+				Constraints:    []string{"Read-only"},
+				ReadyToStart:   true,
+				OpenQuestions:  []string{},
+				ManagerNotes:   "Ready for expert review.",
+			}), nil
+		case "review":
+			return mustMarshal(t, model.ExpertReview{
+				Lens:            request.Lens,
+				Summary:         "Looks good.",
+				Strengths:       []string{"Clear structure"},
+				Concerns:        []string{},
+				Recommendations: []string{},
+				BlockingRisks:   []string{},
+				RequiresChanges: request.Lens == model.LensArchitecture,
+			}), nil
+		case "proposal":
+			switch request.Version {
+			case 1:
+				return mustMarshal(t, model.Proposal{
+					Title:               "Initial proposal",
+					Context:             "Initial context.",
+					Goals:               []string{"Plan the app"},
+					Constraints:         []string{"Read-only"},
+					RecommendedPlan:     []model.PlanItem{{Title: "Draft", Details: "Create the first proposal."}},
+					Risks:               []string{},
+					OpenQuestions:       []string{},
+					ConsensusNotes:      []string{},
+					DeliverablePath:     "",
+					DeliverableMarkdown: "",
+					Converged:           false,
+					ChangeSummary:       "Initial manager draft.",
+				}), nil
+			case 2:
+				return mustMarshal(t, model.Proposal{
+					Title:               "Merged proposal",
+					Context:             "Context after architecture review.",
+					Goals:               []string{"Plan the app"},
+					Constraints:         []string{"Read-only"},
+					RecommendedPlan:     []model.PlanItem{{Title: "Refine", Details: "Add live status board."}},
+					Risks:               []string{},
+					OpenQuestions:       []string{},
+					ConsensusNotes:      []string{"Architecture feedback merged"},
+					DeliverablePath:     "",
+					DeliverableMarkdown: "",
+					Converged:           false,
+					ChangeSummary:       "Merged architecture feedback.",
+				}), nil
+			case 3:
+				return mustMarshal(t, model.Proposal{
+					Title:               "Final proposal",
+					Context:             "Context after all reviews.",
+					Goals:               []string{"Plan the app"},
+					Constraints:         []string{"Read-only"},
+					RecommendedPlan:     []model.PlanItem{{Title: "Ship", Details: "Implement the approved plan."}},
+					Risks:               []string{},
+					OpenQuestions:       []string{},
+					ConsensusNotes:      []string{"Panel converged"},
+					DeliverablePath:     "",
+					DeliverableMarkdown: "",
+					Converged:           true,
+					ChangeSummary:       "Execution feedback merged; proposal converged.",
+				}), nil
+			default:
+				t.Fatalf("unexpected proposal version %d", request.Version)
+				return "", nil
+			}
+		default:
+			t.Fatalf("unexpected output kind %q", request.OutputKind)
+			return "", nil
+		}
+	}
+
+	engine := NewEngine(
+		fakeProvider{id: model.ProviderCodex, run: handler},
+		fakeProvider{id: model.ProviderClaude, run: handler},
+		fakeProvider{id: model.ProviderGemini, run: handler},
+	)
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		MergeStrategy:   model.MergeStrategySequential,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderClaude, model.ProviderGemini},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+	run, err = engine.UpdateBrief(context.Background(), run, "Build the app", nil)
+	if err != nil {
+		t.Fatalf("update brief: %v", err)
+	}
+	run, err = engine.RunDiscussion(context.Background(), run, nil)
+	if err != nil {
+		t.Fatalf("run discussion: %v", err)
+	}
+	if run.FinalProposal == nil {
+		t.Fatal("expected final proposal to be present")
+	}
+	for _, rel := range []string{
+		"proposal-v001.json",
+		"proposal-v002.json",
+		"proposal-v003.json",
+	} {
+		if _, err := os.Stat(filepath.Join(run.OutputDir, rel)); err != nil {
+			t.Fatalf("expected artifact %s: %v", rel, err)
+		}
 	}
 }
 

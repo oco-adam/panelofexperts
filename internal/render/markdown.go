@@ -67,6 +67,7 @@ func RenderProposalMarkdown(proposal model.Proposal, run model.RunState) string 
 	fmt.Fprintf(&b, "- Run ID: `%s`\n", run.ID)
 	fmt.Fprintf(&b, "- Status: `%s`\n", run.Status)
 	fmt.Fprintf(&b, "- Stop reason: `%s`\n", run.StopReason)
+	fmt.Fprintf(&b, "- Merge strategy: `%s`\n", run.MergeStrategy)
 	fmt.Fprintf(&b, "- Rounds completed: `%d`\n", len(run.Rounds))
 	return strings.TrimSpace(b.String()) + "\n"
 }

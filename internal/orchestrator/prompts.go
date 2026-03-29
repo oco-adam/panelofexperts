@@ -78,7 +78,8 @@ func buildBriefPrompt(run model.RunState, userMessage string) string {
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for a planning brief.
 
-Stay in planning mode. Do not inspect files or edit anything during this step.
+Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Inspect only the highest-signal files needed to clarify the brief; avoid broad exploration.
 Do not attempt to exit planning mode or call any write/edit/create tool.
 Use the latest user request and any existing brief context to set:
 - project_title
@@ -101,7 +102,7 @@ Target file hint from the app: %s
 Existing brief: %s
 Previous manager turns: %s
 Latest user request: %s
-`, run.CWD, hint.Kind, hint.TargetFilePath, mustCompactJSON(run.Brief), mustCompactJSON(run.ManagerTurns), strings.TrimSpace(userMessage)))
+	`, run.CWD, run.CWD, hint.Kind, hint.TargetFilePath, mustCompactJSON(run.Brief), mustCompactJSON(run.ManagerTurns), strings.TrimSpace(userMessage)))
 }
 
 func buildInitialProposalPrompt(run model.RunState) string {
@@ -145,10 +146,31 @@ Brief: %s
 Current proposal: %s
 Expert reviewer: %s
 Expert review: %s
-`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(map[string]any{
+	`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(map[string]any{
 		"name": expert.Name,
 		"lens": expert.Lens,
 	}), mustCompactJSON(review)))
+}
+
+type reviewBundleItem struct {
+	Name   string             `json:"name"`
+	Lens   model.ExpertLens   `json:"lens"`
+	Review model.ExpertReview `json:"review"`
+}
+
+func buildCombinedMergePrompt(run model.RunState, current model.Proposal, reviews []reviewBundleItem) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+Return only JSON for an updated planning proposal.
+
+Stay in planning mode. You may inspect the repository at %s for grounding, but do not edit files.
+Do not attempt to exit planning mode or call any write/edit/create tool.
+Consider the expert review bundle together. Reconcile conflicts, preserve strong feedback, reject weak or duplicative suggestions, and keep the proposal coherent.
+If the review bundle does not justify a change, you may return the proposal unchanged. Set converged to true only when the proposal is materially complete and stable.
+
+Brief: %s
+Current proposal: %s
+Expert review bundle: %s
+	`, run.CWD, mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(reviews)))
 }
 
 func mustJSON(value any) string {

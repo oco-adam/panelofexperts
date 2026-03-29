@@ -39,6 +39,7 @@ const (
 	defaultExpertReviewTimeout = 5 * time.Minute
 	claudeExpertReviewTimeout  = 5 * time.Minute
 	promptOnlyRetryTimeout     = 90 * time.Second
+	maxAgentAttempts           = 3
 )
 
 func NewEngine(providersList ...providers.AgentProvider) *Engine {
@@ -177,9 +178,7 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		}
 	}()
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, managerBriefTimeout)
-	defer cancel()
-	result, runErr := provider.Run(timeoutCtx, model.Request{
+	brief, runErr := e.runManagerBrief(ctx, provider, model.Request{
 		RunID:      run.ID,
 		Round:      0,
 		Version:    0,
@@ -190,9 +189,6 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		JSONSchema: briefSchema,
 		OutputKind: "brief",
 		Timeout:    managerBriefTimeout,
-		Metadata: map[string]string{
-			"workspace_access": "none",
-		},
 	}, progressCh)
 	close(progressCh)
 	wg.Wait()
@@ -204,14 +200,6 @@ func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessag
 		return run, runErr
 	}
 
-	brief, err := parseProviderOutput[model.Brief](run.Manager.Provider, result.Stdout)
-	if err != nil {
-		e.markRunFailed(&run, run.Manager.ID, "manager_brief_failed", model.StopReasonManagerFailed, "brief_failed", err)
-		e.touch(&run)
-		_ = store.SaveState(run)
-		notify()
-		return run, err
-	}
 	brief = normalizeBrief(brief, inferTaskHint(run, userMessage))
 
 	run.Brief = brief
@@ -317,45 +305,85 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 		}
 
 		previousHash := render.ProposalHash(proposal)
+		mergedReviews := collectMergedReviews(run, reviews)
 		allNoChanges := true
-		for _, expert := range run.Experts {
-			review, ok := reviewsByLensOrAgent(expert, reviews)
-			if !ok {
-				continue
-			}
-			if review.RequiresChanges {
+		for _, mergedReview := range mergedReviews {
+			if mergedReview.Review.RequiresChanges {
 				allNoChanges = false
+				break
 			}
-			run.CurrentPhase = "manager_merge"
-			run.WaitingSummary = fmt.Sprintf("Waiting on manager merge for %s", expert.Name)
-			run.AgentStatuses[expert.ID] = updateAgentState(run.AgentStatuses[expert.ID], model.AgentStateWaitingOnManager, "manager_merge", "Waiting on manager merge", e.now())
-			e.touch(&run)
-			notify()
-
-			merged, nextVersion, mergeErr := e.runManagerProposal(
-				ctx,
-				managerProvider,
-				&run,
-				store,
-				updateProgress,
-				buildMergePrompt(run, proposal, review, expert),
-				version+1,
-			)
-			if mergeErr != nil {
-				e.markRunFailed(&run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
+		}
+		switch run.MergeStrategy {
+		case model.MergeStrategySequential:
+			for _, mergedReview := range mergedReviews {
+				run.CurrentPhase = "manager_merge"
+				run.WaitingSummary = fmt.Sprintf("Waiting on manager merge for %s", mergedReview.Expert.Name)
+				run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateWaitingOnManager, "manager_merge", "Waiting on manager merge", e.now())
 				e.touch(&run)
-				_ = store.SaveState(run)
 				notify()
-				return run, mergeErr
+
+				merged, nextVersion, mergeErr := e.runManagerProposal(
+					ctx,
+					managerProvider,
+					&run,
+					store,
+					updateProgress,
+					buildMergePrompt(run, proposal, mergedReview.Review, mergedReview.Expert),
+					version+1,
+				)
+				if mergeErr != nil {
+					e.markRunFailed(&run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
+					e.touch(&run)
+					_ = store.SaveState(run)
+					notify()
+					return run, mergeErr
+				}
+				proposal = merged
+				version = nextVersion
+				roundState.ProposalVersion = version
+				roundState.Proposal = proposal
+				syncSnapshot(func() {
+					run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateDone, "review_merged", "Manager incorporated the review", e.now())
+					e.touch(&run)
+				})
 			}
-			proposal = merged
-			version = nextVersion
-			roundState.ProposalVersion = version
-			roundState.Proposal = proposal
-			syncSnapshot(func() {
-				run.AgentStatuses[expert.ID] = updateAgentState(run.AgentStatuses[expert.ID], model.AgentStateDone, "review_merged", "Manager incorporated the review", e.now())
+		default:
+			if len(mergedReviews) > 0 {
+				run.CurrentPhase = "manager_merge"
+				run.WaitingSummary = "Waiting on manager merge"
+				for _, mergedReview := range mergedReviews {
+					run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateWaitingOnManager, "manager_merge", "Waiting on manager merge", e.now())
+				}
 				e.touch(&run)
-			})
+				notify()
+
+				merged, nextVersion, mergeErr := e.runManagerProposal(
+					ctx,
+					managerProvider,
+					&run,
+					store,
+					updateProgress,
+					buildCombinedMergePrompt(run, proposal, buildReviewBundle(mergedReviews)),
+					version+1,
+				)
+				if mergeErr != nil {
+					e.markRunFailed(&run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
+					e.touch(&run)
+					_ = store.SaveState(run)
+					notify()
+					return run, mergeErr
+				}
+				proposal = merged
+				version = nextVersion
+				roundState.ProposalVersion = version
+				roundState.Proposal = proposal
+				syncSnapshot(func() {
+					for _, mergedReview := range mergedReviews {
+						run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateDone, "review_merged", "Manager incorporated the review", e.now())
+					}
+					e.touch(&run)
+				})
+			}
 		}
 
 		now := e.now()
@@ -532,50 +560,16 @@ func (e *Engine) runExpertReview(
 	request model.Request,
 	progress chan<- model.ProgressEvent,
 ) (model.ExpertReview, error) {
-	review, err := runExpertReviewAttempt(ctx, provider, request, progress)
-	if err == nil || !shouldRetryReview(err) {
-		return review, err
-	}
-
-	if progress != nil {
-		select {
-		case progress <- model.ProgressEvent{
-			Timestamp: time.Now().UTC(),
-			RunID:     request.RunID,
-			Round:     request.Round,
-			AgentID:   request.AgentID,
-			Role:      request.Role,
-			Provider:  provider.ID(),
-			State:     model.AgentStateRunning,
-			Step:      "retry",
-			Summary:   "Retrying review without workspace tools",
-		}:
-		default:
-		}
-	}
-
-	retryRequest := request
-	retryRequest.Timeout = promptOnlyRetryTimeout
-	retryRequest.Metadata = cloneMetadata(request.Metadata)
-	retryRequest.Metadata["workspace_access"] = "none"
-	retryRequest.Prompt = strings.TrimSpace(request.Prompt + "\n\nRetry mode: do not inspect the repository or use tools. Review only the supplied brief and proposal.")
-	return runExpertReviewAttempt(ctx, provider, retryRequest, progress)
+	return runStructuredRequest[model.ExpertReview](ctx, provider, request, progress, buildExpertRetryRequest)
 }
 
-func runExpertReviewAttempt(
+func (e *Engine) runManagerBrief(
 	ctx context.Context,
 	provider providers.AgentProvider,
 	request model.Request,
 	progress chan<- model.ProgressEvent,
-) (model.ExpertReview, error) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, request.Timeout)
-	defer cancel()
-
-	result, err := provider.Run(timeoutCtx, request, progress)
-	if err != nil {
-		return model.ExpertReview{}, err
-	}
-	return parseProviderOutput[model.ExpertReview](provider.ID(), result.Stdout)
+) (model.Brief, error) {
+	return runStructuredRequest[model.Brief](ctx, provider, request, progress, buildManagerRetryRequest)
 }
 
 func (e *Engine) runManagerProposal(
@@ -597,9 +591,7 @@ func (e *Engine) runManagerProposal(
 		}
 	}()
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, managerProposalTimeout)
-	defer cancel()
-	result, err := provider.Run(timeoutCtx, model.Request{
+	proposal, err := runStructuredRequest[model.Proposal](ctx, provider, model.Request{
 		RunID:      run.ID,
 		Round:      run.CurrentRound,
 		Version:    version,
@@ -610,14 +602,9 @@ func (e *Engine) runManagerProposal(
 		JSONSchema: proposalSchema,
 		OutputKind: "proposal",
 		Timeout:    managerProposalTimeout,
-	}, progressCh)
+	}, progressCh, buildManagerRetryRequest)
 	close(progressCh)
 	wg.Wait()
-	if err != nil {
-		return model.Proposal{}, version, err
-	}
-
-	proposal, err := parseProviderOutput[model.Proposal](run.Manager.Provider, result.Stdout)
 	if err != nil {
 		return model.Proposal{}, version, err
 	}
@@ -917,14 +904,52 @@ func reviewTimeoutFor(provider model.ProviderID) time.Duration {
 	return defaultExpertReviewTimeout
 }
 
-func shouldRetryReview(err error) bool {
+func runStructuredRequest[T any](
+	ctx context.Context,
+	provider providers.AgentProvider,
+	request model.Request,
+	progress chan<- model.ProgressEvent,
+	buildRetryRequest func(model.Request, int, error) model.Request,
+) (T, error) {
+	var zero T
+	var lastErr error
+	for attempt := 1; attempt <= maxAgentAttempts; attempt++ {
+		currentRequest := request
+		if attempt > 1 {
+			currentRequest = buildRetryRequest(request, attempt, lastErr)
+			emitRetryProgress(progress, provider.ID(), currentRequest, attempt, lastErr)
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(ctx, currentRequest.Timeout)
+		result, err := provider.Run(timeoutCtx, currentRequest, progress)
+		cancel()
+		if err == nil {
+			value, parseErr := parseProviderOutput[T](provider.ID(), result.Stdout)
+			if parseErr == nil {
+				return value, nil
+			}
+			err = parseErr
+		}
+		lastErr = err
+		if attempt == maxAgentAttempts || !shouldRetryRequest(err) {
+			return zero, err
+		}
+	}
+	return zero, lastErr
+}
+
+func shouldRetryRequest(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "timed out") ||
+		strings.Contains(msg, "deadline exceeded") ||
 		strings.Contains(msg, "unable to parse") ||
-		strings.Contains(msg, "signal: killed")
+		strings.Contains(msg, "signal: killed") ||
+		strings.Contains(msg, "transport closed") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset")
 }
 
 func cloneMetadata(metadata map[string]string) map[string]string {
@@ -949,6 +974,55 @@ func summarizeError(err error) string {
 	return msg
 }
 
+func emitRetryProgress(progress chan<- model.ProgressEvent, provider model.ProviderID, request model.Request, attempt int, err error) {
+	if progress == nil {
+		return
+	}
+	summary := fmt.Sprintf("Retrying %s (attempt %d of %d)", request.OutputKind, attempt, maxAgentAttempts)
+	if trimmed := summarizeError(err); trimmed != "" {
+		summary = fmt.Sprintf("%s after %s", summary, trimmed)
+	}
+	select {
+	case progress <- model.ProgressEvent{
+		Timestamp: time.Now().UTC(),
+		RunID:     request.RunID,
+		Round:     request.Round,
+		AgentID:   request.AgentID,
+		Role:      request.Role,
+		Provider:  provider,
+		State:     model.AgentStateRunning,
+		Step:      "retry",
+		Summary:   summary,
+	}:
+	default:
+	}
+}
+
+func buildManagerRetryRequest(request model.Request, attempt int, err error) model.Request {
+	retryRequest := request
+	retryRequest.Metadata = cloneMetadata(request.Metadata)
+	retryRequest.Prompt = strings.TrimSpace(request.Prompt + "\n\n" + retryInstruction(attempt, err))
+	return retryRequest
+}
+
+func buildExpertRetryRequest(request model.Request, attempt int, err error) model.Request {
+	retryRequest := buildManagerRetryRequest(request, attempt, err)
+	if attempt == maxAgentAttempts {
+		retryRequest.Timeout = promptOnlyRetryTimeout
+		retryRequest.Metadata["workspace_access"] = "none"
+		retryRequest.Prompt = strings.TrimSpace(retryRequest.Prompt + "\n\nRetry mode: do not inspect the repository or use tools. Review only the supplied brief and proposal.")
+	}
+	return retryRequest
+}
+
+func retryInstruction(attempt int, err error) string {
+	instruction := fmt.Sprintf("Retry attempt %d of %d.", attempt, maxAgentAttempts)
+	if summary := summarizeError(err); summary != "" {
+		instruction += " The previous attempt failed with: " + summary + "."
+	}
+	return instruction + " Return exactly one JSON object that matches the required schema. Do not include markdown fences, commentary, or any extra text."
+}
+
 func reviewsByLensOrAgent(agent model.AgentConfig, reviews []model.ExpertReview) (model.ExpertReview, bool) {
 	for _, review := range reviews {
 		if review.Lens == agent.Lens {
@@ -956,6 +1030,38 @@ func reviewsByLensOrAgent(agent model.AgentConfig, reviews []model.ExpertReview)
 		}
 	}
 	return model.ExpertReview{}, false
+}
+
+type mergedReview struct {
+	Expert model.AgentConfig
+	Review model.ExpertReview
+}
+
+func collectMergedReviews(run model.RunState, reviews []model.ExpertReview) []mergedReview {
+	merged := make([]mergedReview, 0, len(reviews))
+	for _, expert := range run.Experts {
+		review, ok := reviewsByLensOrAgent(expert, reviews)
+		if !ok {
+			continue
+		}
+		merged = append(merged, mergedReview{
+			Expert: expert,
+			Review: review,
+		})
+	}
+	return merged
+}
+
+func buildReviewBundle(reviews []mergedReview) []reviewBundleItem {
+	bundle := make([]reviewBundleItem, 0, len(reviews))
+	for _, review := range reviews {
+		bundle = append(bundle, reviewBundleItem{
+			Name:   review.Expert.Name,
+			Lens:   review.Expert.Lens,
+			Review: review.Review,
+		})
+	}
+	return bundle
 }
 
 func normalizeBrief(brief model.Brief, hint taskHint) model.Brief {
