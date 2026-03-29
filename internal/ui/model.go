@@ -819,7 +819,18 @@ func (m Model) briefContent() string {
 }
 
 func (m Model) briefGroundingBlock() string {
-	return m.briefGroundingBlockWithLimit(0)
+	lines := m.briefGroundingLines()
+	if len(lines) == 0 {
+		return ""
+	}
+	limit := m.briefGroundingLineLimit()
+	if limit == 0 {
+		return ""
+	}
+	if limit >= len(lines) {
+		return m.briefGroundingBlockWithLimit(len(lines))
+	}
+	return m.briefGroundingBlockWithLimit(limit)
 }
 
 func (m Model) briefGroundingBlockWithLimit(limit int) string {
@@ -866,6 +877,26 @@ func (m Model) briefGroundingLines() []string {
 	return lines
 }
 
+func (m Model) briefGroundingLineLimit() int {
+	lines := m.briefGroundingLines()
+	if len(lines) == 0 || m.height == 0 || m.layout.contentWidth == 0 {
+		return 0
+	}
+
+	headerHeight := lipgloss.Height(m.briefHeaderBlock())
+	footerHeight := lipgloss.Height(m.briefFooterBlock())
+	panelChrome := m.chrome.panelChromeHeight("Brief Snapshot", m.layout.contentWidth, toneInfo)
+	for limit := len(lines); limit >= 1; limit-- {
+		groundingHeight := lipgloss.Height(m.briefGroundingBlockWithLimit(limit))
+		spacing := 5 + groundingHeight + 2
+		available := m.height - headerHeight - footerHeight - panelChrome - spacing
+		if available >= minBriefViewportHeight {
+			return limit
+		}
+	}
+	return 0
+}
+
 func (m *Model) syncBriefInput() {
 	if m.briefQuestionSubmitting {
 		m.input.Placeholder = "Manager is updating the brief"
@@ -904,7 +935,7 @@ func (m *Model) syncBriefViewportLayout() {
 	if groundingHeight > 0 {
 		spacing += groundingHeight + 2
 	}
-	m.briefViewport.SetHeight(m.layout.viewportHeight(headerHeight, footerHeight, panelChrome, spacing, 0))
+	m.briefViewport.SetHeight(m.layout.viewportHeight(headerHeight, footerHeight, panelChrome, spacing, minBriefViewportHeight))
 	m.briefViewport.SetContent(m.briefContent())
 }
 

@@ -6,6 +6,7 @@ const (
 	screenHorizontalPadding = 4
 	minPanelWidth           = 30
 	minViewportHeight       = 2
+	minBriefViewportHeight  = 5
 	minTallViewportHeight   = 3
 	monitorSplitMinWidth    = 100
 	monitorPanelGap         = 2

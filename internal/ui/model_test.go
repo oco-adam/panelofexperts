@@ -467,7 +467,7 @@ func TestBriefViewShowsRepoGroundingPanelWhenReady(t *testing.T) {
 		stubProvider{id: model.ProviderGemini},
 	)
 	m := New(engine, tempDir, OutputRoot(tempDir))
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 34})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
 
 	m.screen = screenBrief
@@ -497,6 +497,65 @@ func TestBriefViewShowsRepoGroundingPanelWhenReady(t *testing.T) {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("expected brief view to contain %q, got:\n%s", expected, view)
 		}
+	}
+}
+
+func TestBriefViewKeepsSnapshotVisibleWhenGroundingIsTall(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := orchestrator.NewEngine(
+		stubProvider{id: model.ProviderCodex},
+		stubProvider{id: model.ProviderClaude},
+		stubProvider{id: model.ProviderGemini},
+	)
+	m := New(engine, tempDir, OutputRoot(tempDir))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = updated.(Model)
+
+	m.screen = screenBrief
+	m.run = model.NewRunState(
+		"run-tall-grounding",
+		tempDir,
+		OutputRoot(tempDir),
+		5,
+		model.MergeStrategyTogether,
+		model.AgentConfig{ID: "manager", Name: "Manager (Codex CLI)", Role: model.RoleManager, Provider: model.ProviderCodex},
+		[]model.AgentConfig{},
+	)
+	m.run.Status = model.RunStatusWaiting
+	m.run.WaitingSummary = "Waiting for the next user action"
+	m.run.RepoGrounding = model.RepoGrounding{
+		Status:        model.RepoGroundingReady,
+		WorkspaceRoot: tempDir,
+		Summary:       "JavaScript/TypeScript workspace, docs in DESIGN.md and README.md, release automation via GitHub Actions.",
+		Facts: []model.GroundingFact{
+			{Label: "Primary Runtime", Value: "JavaScript/TypeScript (package.json)"},
+			{Label: "Detected Manifests", Value: "package.json"},
+			{Label: "Key Docs", Value: "DESIGN.md, README.md"},
+			{Label: "Release Tooling", Value: "GitHub Actions"},
+		},
+		Unknowns: []string{
+			"No CLI entrypoint was detected under cmd/.",
+			"No dedicated API server entrypoint was detected.",
+		},
+	}
+	m.run.Brief.ProjectTitle = "Theda"
+	m.run.Brief.IntentSummary = "Expand the RFC into a complete capability-first proposal."
+	m.run.Brief.Goals = []string{"Rewrite the RFC", "Clarify runtime boundaries"}
+	m.run.Brief.Constraints = []string{"Keep cleanup guidance high-level"}
+	m.syncBriefInput()
+	m.refreshRunViews()
+
+	view := stripANSI(m.View().Content)
+	if m.briefViewport.Height() < minBriefViewportHeight {
+		t.Fatalf("expected brief viewport height >= %d, got %d", minBriefViewportHeight, m.briefViewport.Height())
+	}
+	for _, expected := range []string{"Brief Snapshot", "Intent Summary", "Expand the RFC into a complete capability-first proposal."} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("expected tall-grounding brief view to contain %q, got:\n%s", expected, view)
+		}
+	}
+	if height := lipgloss.Height(view); height > m.height {
+		t.Fatalf("expected tall-grounding brief view height <= window height (%d), got %d\n%s", m.height, height, view)
 	}
 }
 
