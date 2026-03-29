@@ -33,6 +33,39 @@ func TestCollectRepoGroundingDetectsHighSignalWorkspaceFacts(t *testing.T) {
 	}
 }
 
+func TestCollectRepoGroundingDetectsMixedWorkspaceFacts(t *testing.T) {
+	tempDir := t.TempDir()
+	mustWriteFile(t, filepath.Join(tempDir, "dune-project"), "(lang dune 3.11)\n")
+	mustWriteFile(t, filepath.Join(tempDir, "rust", "Cargo.toml"), "[workspace]\nmembers = []\n")
+	mustWriteFile(t, filepath.Join(tempDir, "website", "package.json"), "{\n  \"name\": \"website\"\n}\n")
+	mustWriteFile(t, filepath.Join(tempDir, "website", "tsconfig.json"), "{\n  \"compilerOptions\": {}\n}\n")
+	mustWriteFile(t, filepath.Join(tempDir, "README.md"), "# Theda\n")
+	mustWriteFile(t, filepath.Join(tempDir, "NORTH_STAR.md"), "# North Star\n")
+	mustWriteFile(t, filepath.Join(tempDir, "spec", "public-contract", "README.md"), "# Public Contract\n")
+
+	grounding, err := collectRepoGrounding(tempDir)
+	if err != nil {
+		t.Fatalf("collect repo grounding: %v", err)
+	}
+
+	for _, expected := range []string{"OCaml", "Rust", "JavaScript/TypeScript"} {
+		assertGroundingFact(t, grounding, "language_runtime", expected)
+	}
+	assertGroundingFact(t, grounding, "manifest", "dune-project")
+	assertGroundingFact(t, grounding, "manifest", "rust/Cargo.toml")
+	assertGroundingFact(t, grounding, "manifest", "website/package.json")
+	assertGroundingFact(t, grounding, "project_layout", "Rust workspace (`rust/Cargo.toml`)")
+	assertGroundingFact(t, grounding, "project_layout", "JavaScript/TypeScript app (`website/package.json`)")
+	assertGroundingFact(t, grounding, "docs", "NORTH_STAR.md")
+	assertGroundingFact(t, grounding, "docs", "spec/public-contract/README.md")
+	if strings.Contains(strings.Join(grounding.Unknowns, "\n"), "No CLI entrypoint was detected under cmd/.") {
+		t.Fatalf("did not expect Go-specific entrypoint warning for mixed non-Go fixture, got %+v", grounding.Unknowns)
+	}
+	if !strings.Contains(grounding.Summary, "projects:") {
+		t.Fatalf("expected summary to mention workspace projects, got %q", grounding.Summary)
+	}
+}
+
 func TestValidateGroundedQuestionsRejectsRepoAnswerableQuestions(t *testing.T) {
 	grounding := model.RepoGrounding{
 		Status: model.RepoGroundingReady,

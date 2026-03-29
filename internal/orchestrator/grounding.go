@@ -106,26 +106,36 @@ func collectRepoGrounding(cwd string) (model.RepoGrounding, error) {
 		})
 	}
 
-	manifestPaths := []string{}
-	if rel, ok := existingRelPath(root, "go.mod"); ok {
-		manifestPaths = append(manifestPaths, rel)
-		addFact("language_runtime", "Primary Runtime", "Go", rel)
+	manifestPaths, err := findMatchingFiles(root, func(path string, d fs.DirEntry) bool {
+		if d.IsDir() {
+			return false
+		}
+		switch filepath.Base(path) {
+		case "go.mod", "package.json", "pyproject.toml", "Cargo.toml", "dune-project", "pnpm-workspace.yaml", "tsconfig.json", "tsconfig.base.json":
+			return true
+		}
+		return strings.HasSuffix(path, ".opam")
+	})
+	if err != nil {
+		return model.RepoGrounding{}, err
 	}
-	if rel, ok := existingRelPath(root, "package.json"); ok {
-		manifestPaths = append(manifestPaths, rel)
-		addFact("language_runtime", "Primary Runtime", "JavaScript/TypeScript", rel)
+	representativeManifests := representativeManifestPaths(manifestPaths)
+	runtimes := detectedRuntimes(manifestPaths)
+	if len(runtimes) > 0 {
+		label := "Primary Runtime"
+		if len(runtimes) > 1 {
+			label = "Workspace Runtimes"
+		}
+		addFact("language_runtime", label, strings.Join(runtimes, ", "), representativeManifests...)
 	}
-	if rel, ok := existingRelPath(root, "pyproject.toml"); ok {
-		manifestPaths = append(manifestPaths, rel)
-		addFact("language_runtime", "Primary Runtime", "Python", rel)
+	if len(representativeManifests) > 0 {
+		addFact("manifest", "Detected Manifests", joinCodePaths(representativeManifests), representativeManifests...)
 	}
-	if rel, ok := existingRelPath(root, "Cargo.toml"); ok {
-		manifestPaths = append(manifestPaths, rel)
-		addFact("language_runtime", "Primary Runtime", "Rust", rel)
+	projectLayout := describeWorkspaceProjects(representativeManifests)
+	if len(projectLayout) > 0 {
+		addFact("project_layout", "Workspace Projects", strings.Join(projectLayout, "; "), representativeManifests...)
 	}
-	if len(manifestPaths) > 0 {
-		addFact("manifest", "Detected Manifests", joinCodePaths(manifestPaths), manifestPaths...)
-	} else {
+	if len(representativeManifests) == 0 {
 		unknowns = append(unknowns, "No high-signal package manifest was detected at the workspace root.")
 	}
 
@@ -145,27 +155,29 @@ func collectRepoGrounding(cwd string) (model.RepoGrounding, error) {
 		}
 	}
 
-	entrypoints, err := findMatchingFiles(root, func(path string, d fs.DirEntry) bool {
-		if d.IsDir() {
-			return false
+	if containsString(runtimes, "Go") {
+		entrypoints, err := findMatchingFiles(root, func(path string, d fs.DirEntry) bool {
+			if d.IsDir() {
+				return false
+			}
+			return strings.HasPrefix(path, "cmd/") && strings.HasSuffix(path, "/main.go")
+		})
+		if err != nil {
+			return model.RepoGrounding{}, err
 		}
-		return strings.HasPrefix(path, "cmd/") && strings.HasSuffix(path, "/main.go")
-	})
-	if err != nil {
-		return model.RepoGrounding{}, err
-	}
-	if len(entrypoints) > 0 {
-		values := make([]string, 0, len(entrypoints))
-		for _, path := range entrypoints {
-			values = append(values, fmt.Sprintf("`%s`", strings.TrimSuffix(path, "/main.go")))
+		if len(entrypoints) > 0 {
+			values := make([]string, 0, len(entrypoints))
+			for _, path := range entrypoints {
+				values = append(values, fmt.Sprintf("`%s`", strings.TrimSuffix(path, "/main.go")))
+			}
+			addFact("entrypoint", "CLI Entrypoints", strings.Join(values, ", "), entrypoints...)
+		} else {
+			unknowns = append(unknowns, "No CLI entrypoint was detected under cmd/.")
 		}
-		addFact("entrypoint", "CLI Entrypoints", strings.Join(values, ", "), entrypoints...)
-	} else {
-		unknowns = append(unknowns, "No CLI entrypoint was detected under cmd/.")
 	}
 
 	docCandidates := []string{}
-	for _, rel := range []string{"README.md", "README", "DESIGN.md"} {
+	for _, rel := range []string{"README.md", "README", "DESIGN.md", "NORTH_STAR.md", "spec/public-contract/README.md"} {
 		if path, ok := existingRelPath(root, rel); ok {
 			docCandidates = append(docCandidates, path)
 		}
@@ -282,6 +294,9 @@ func summarizeGrounding(facts []model.GroundingFact) string {
 	if runtime := lookup["language_runtime"]; runtime != "" {
 		parts = append(parts, runtime+" workspace")
 	}
+	if layout := lookup["project_layout"]; layout != "" {
+		parts = append(parts, "projects: "+layout)
+	}
 	if framework := lookup["framework"]; framework != "" {
 		parts = append(parts, "using "+framework)
 	}
@@ -361,7 +376,7 @@ func groundedQuestionCategory(question string, known map[string]struct{}) string
 		keywords []string
 	}{
 		{category: "framework", keywords: []string{"framework", "bubble tea", "bubbletea", "renderer", "rendering approach", "lip gloss", "lipgloss", "tcell"}},
-		{category: "language_runtime", keywords: []string{"what language", "which language", "runtime", "tech stack", "go module", "implemented in"}},
+		{category: "language_runtime", keywords: []string{"what language", "which language", "runtime", "tech stack", "go module", "implemented in", "ocaml", "rust", "typescript", "javascript"}},
 		{category: "entrypoint", keywords: []string{"entrypoint", "entry point", "main.go", "main package", "where does the app start", "starting point"}},
 		{category: "docs", keywords: []string{"readme", "design.md", "documentation", "docs folder", "existing docs"}},
 		{category: "tests", keywords: []string{"tests exist", "test suite", "unit tests", "integration tests", "coverage", "_test.go"}},
@@ -482,4 +497,155 @@ func limitPaths(paths []string, limit int) []string {
 		return paths
 	}
 	return paths[:limit]
+}
+
+func detectedRuntimes(manifests []string) []string {
+	seen := map[string]struct{}{}
+	for _, path := range manifests {
+		switch base := filepath.Base(path); {
+		case base == "go.mod":
+			seen["Go"] = struct{}{}
+		case base == "package.json" || strings.HasPrefix(base, "tsconfig"):
+			seen["JavaScript/TypeScript"] = struct{}{}
+		case base == "pyproject.toml":
+			seen["Python"] = struct{}{}
+		case base == "Cargo.toml":
+			seen["Rust"] = struct{}{}
+		case base == "dune-project" || strings.HasSuffix(path, ".opam"):
+			seen["OCaml"] = struct{}{}
+		}
+	}
+	order := []string{"Go", "OCaml", "Rust", "JavaScript/TypeScript", "Python"}
+	runtimes := make([]string, 0, len(seen))
+	for _, runtime := range order {
+		if _, ok := seen[runtime]; ok {
+			runtimes = append(runtimes, runtime)
+		}
+	}
+	for runtime := range seen {
+		if !containsString(runtimes, runtime) {
+			runtimes = append(runtimes, runtime)
+		}
+	}
+	return runtimes
+}
+
+func representativeManifestPaths(manifests []string) []string {
+	manifests = uniqueSortedPaths(manifests)
+	if len(manifests) == 0 {
+		return []string{}
+	}
+
+	chosen := []string{}
+	groupBest := map[string]string{}
+	for _, path := range manifests {
+		if strings.Count(path, "/") == 0 {
+			chosen = append(chosen, path)
+			continue
+		}
+		group := strings.SplitN(path, "/", 2)[0]
+		best, ok := groupBest[group]
+		if !ok || manifestPreference(path, best) < 0 {
+			groupBest[group] = path
+		}
+	}
+	groups := make([]string, 0, len(groupBest))
+	for group := range groupBest {
+		groups = append(groups, group)
+	}
+	sort.Strings(groups)
+	for _, group := range groups {
+		chosen = append(chosen, groupBest[group])
+	}
+
+	sort.SliceStable(chosen, func(i, j int) bool {
+		left, right := chosen[i], chosen[j]
+		leftDepth, rightDepth := strings.Count(left, "/"), strings.Count(right, "/")
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return left < right
+	})
+	return limitPaths(chosen, 6)
+}
+
+func describeWorkspaceProjects(manifests []string) []string {
+	descriptions := make([]string, 0, len(manifests))
+	for _, path := range manifests {
+		runtime := manifestRuntime(path)
+		if runtime == "" {
+			continue
+		}
+		if strings.Count(path, "/") == 0 {
+			descriptions = append(descriptions, fmt.Sprintf("%s root (`%s`)", runtime, path))
+			continue
+		}
+		label := "project"
+		switch filepath.Base(path) {
+		case "Cargo.toml":
+			label = "workspace"
+		case "package.json", "tsconfig.json", "tsconfig.base.json":
+			label = "app"
+		}
+		descriptions = append(descriptions, fmt.Sprintf("%s %s (`%s`)", runtime, label, path))
+	}
+	return uniqueStrings(descriptions)
+}
+
+func manifestRuntime(path string) string {
+	switch base := filepath.Base(path); {
+	case base == "go.mod":
+		return "Go"
+	case base == "package.json" || strings.HasPrefix(base, "tsconfig"):
+		return "JavaScript/TypeScript"
+	case base == "pyproject.toml":
+		return "Python"
+	case base == "Cargo.toml":
+		return "Rust"
+	case base == "dune-project" || strings.HasSuffix(path, ".opam"):
+		return "OCaml"
+	default:
+		return ""
+	}
+}
+
+func manifestPreference(candidate, current string) int {
+	candidateDepth, currentDepth := strings.Count(candidate, "/"), strings.Count(current, "/")
+	if candidateDepth != currentDepth {
+		return candidateDepth - currentDepth
+	}
+	candidateRank, currentRank := manifestRank(candidate), manifestRank(current)
+	if candidateRank != currentRank {
+		return candidateRank - currentRank
+	}
+	if candidate < current {
+		return -1
+	}
+	if candidate > current {
+		return 1
+	}
+	return 0
+}
+
+func manifestRank(path string) int {
+	switch filepath.Base(path) {
+	case "go.mod", "dune-project", "Cargo.toml", "package.json", "pyproject.toml":
+		return 0
+	case "tsconfig.json", "tsconfig.base.json":
+		return 1
+	default:
+		if strings.HasSuffix(path, ".opam") {
+			return 2
+		}
+		return 3
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
