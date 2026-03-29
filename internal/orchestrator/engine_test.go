@@ -324,6 +324,117 @@ Use semantic roles for typography, borders, spacing, emphasis, and feedback stat
 	}
 }
 
+func TestDocumentRunPersistsRunningStatusWhileDraftingDeliverable(t *testing.T) {
+	tempDir := t.TempDir()
+	targetFile := filepath.Join(tempDir, "migrate-to-rust-impl-plan.md")
+	sawWritingSnapshot := false
+
+	handler := func(request model.Request) (string, error) {
+		switch request.OutputKind {
+		case "brief":
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Theda",
+				IntentSummary:  "Rewrite the migration plan.",
+				TaskKind:       model.TaskKindDocument,
+				TargetFilePath: targetFile,
+				Goals:          []string{"Rewrite the document"},
+				Constraints:    []string{"Stay grounded in the repo"},
+				ReadyToStart:   true,
+				OpenQuestions:  []string{},
+				ManagerNotes:   "Ready to write the final document.",
+			}), nil
+		case "review":
+			return mustMarshal(t, model.ExpertReview{
+				Lens:            request.Lens,
+				Summary:         "Looks good.",
+				Strengths:       []string{"Clear structure"},
+				Concerns:        []string{},
+				Recommendations: []string{},
+				BlockingRisks:   []string{},
+				RequiresChanges: false,
+			}), nil
+		case "proposal":
+			return mustMarshal(t, model.Proposal{
+				Title:               "Migration plan rewrite",
+				Context:             "Rewrite the migration plan as the final document.",
+				Goals:               []string{"Rewrite the document"},
+				Constraints:         []string{"Ground it in the repo"},
+				RecommendedPlan:     []model.PlanItem{{Title: "Rewrite", Details: "Draft the final markdown."}},
+				Risks:               []string{},
+				OpenQuestions:       []string{},
+				ConsensusNotes:      []string{"Ready to write"},
+				DeliverablePath:     targetFile,
+				DeliverableMarkdown: "",
+				Converged:           true,
+				ChangeSummary:       "Ready for final drafting.",
+			}), nil
+		case "deliverable":
+			return mustMarshal(t, model.DocumentDraft{
+				Path:     targetFile,
+				Markdown: "# Final Migration Plan\n",
+			}), nil
+		default:
+			t.Fatalf("unexpected output kind %q", request.OutputKind)
+			return "", nil
+		}
+	}
+
+	engine := NewEngine(
+		fakeProvider{id: model.ProviderCodex, run: handler},
+		fakeProvider{id: model.ProviderClaude, run: handler},
+	)
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderClaude},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+
+	run, err = engine.UpdateBrief(context.Background(), run, "Rewrite the migration plan", nil)
+	if err != nil {
+		t.Fatalf("update brief: %v", err)
+	}
+
+	run, err = engine.RunDiscussion(context.Background(), run, func(snapshot model.RunState) {
+		if sawWritingSnapshot || snapshot.CurrentPhase != "writing_deliverable" {
+			return
+		}
+		sawWritingSnapshot = true
+
+		data, readErr := os.ReadFile(filepath.Join(snapshot.OutputDir, "state.json"))
+		if readErr != nil {
+			t.Fatalf("read persisted state: %v", readErr)
+		}
+		var persisted model.RunState
+		if unmarshalErr := json.Unmarshal(data, &persisted); unmarshalErr != nil {
+			t.Fatalf("unmarshal persisted state: %v", unmarshalErr)
+		}
+		if persisted.Status != model.RunStatusRunning {
+			t.Fatalf("expected persisted status to remain running while drafting deliverable, got %s", persisted.Status)
+		}
+		if persisted.CurrentPhase != "writing_deliverable" {
+			t.Fatalf("expected persisted phase writing_deliverable, got %s", persisted.CurrentPhase)
+		}
+		if persisted.AgentStatuses[persisted.Manager.ID].State != model.AgentStateRunning {
+			t.Fatalf("expected manager to remain running while drafting deliverable, got %s", persisted.AgentStatuses[persisted.Manager.ID].State)
+		}
+	})
+	if err != nil {
+		t.Fatalf("run discussion: %v", err)
+	}
+	if !sawWritingSnapshot {
+		t.Fatal("expected to observe a persisted writing_deliverable snapshot")
+	}
+	if run.Status != model.RunStatusConverged {
+		t.Fatalf("expected completed document run to converge, got %s", run.Status)
+	}
+}
+
 func TestEngineNewRunDefaultsMaxRoundsToFive(t *testing.T) {
 	tempDir := t.TempDir()
 	engine := NewEngine(

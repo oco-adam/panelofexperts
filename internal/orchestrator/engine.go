@@ -302,6 +302,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 	}
 
 	stopReason := model.StopReasonDiscussionEnded
+	finalStatus := model.RunStatusComplete
 	for round := 1; round <= run.MaxRounds; round++ {
 		run.CurrentRound = round
 		run.CurrentPhase = "expert_reviews"
@@ -423,24 +424,23 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 		switch {
 		case proposal.Converged:
 			stopReason = model.StopReasonConverged
-			run.Status = model.RunStatusConverged
+			finalStatus = model.RunStatusConverged
 			goto finalize
 		case previousHash == newHash:
 			stopReason = model.StopReasonProposalStable
-			run.Status = model.RunStatusConverged
+			finalStatus = model.RunStatusConverged
 			goto finalize
 		case allNoChanges:
 			stopReason = model.StopReasonConverged
-			run.Status = model.RunStatusConverged
+			finalStatus = model.RunStatusConverged
 			goto finalize
 		}
 	}
 
 	stopReason = model.StopReasonMaxRounds
-	run.Status = model.RunStatusComplete
+	finalStatus = model.RunStatusComplete
 
 finalize:
-	run.StopReason = stopReason
 	run.FailureSummary = ""
 	run.FinalProposal = &proposal
 	if run.Brief.TaskKind == model.TaskKindDocument {
@@ -491,12 +491,11 @@ finalize:
 	} else {
 		run.FinalMarkdown = finalMarkdown(run, proposal)
 	}
+	run.StopReason = stopReason
 	run.FinalMarkdownPath = filepath.Join(run.OutputDir, "final.md")
 	run.CurrentPhase = "finalized"
 	run.WaitingSummary = ""
-	if run.Status != model.RunStatusConverged {
-		run.Status = model.RunStatusComplete
-	}
+	run.Status = finalStatus
 	e.appendTimeline(&run, run.CurrentRound, run.Manager.ID, "Manager finalized the discussion")
 	e.touch(&run)
 	_ = store.SaveText("final.md", run.FinalMarkdown)
