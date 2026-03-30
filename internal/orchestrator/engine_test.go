@@ -443,6 +443,105 @@ func TestDocumentRunPersistsRunningStatusWhileDraftingDeliverable(t *testing.T) 
 	}
 }
 
+func TestDocumentRunRetriesPlanningArtifactDraftFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	targetFile := filepath.Join(tempDir, "rust-first-migration-plan.md")
+	documentCalls := 0
+	sawRetryInstruction := false
+
+	handler := func(request model.Request) (string, error) {
+		switch request.OutputKind {
+		case "brief":
+			return mustMarshal(t, model.Brief{
+				ProjectTitle:   "Theda",
+				IntentSummary:  "Rewrite the migration plan.",
+				TaskKind:       model.TaskKindDocument,
+				TargetFilePath: targetFile,
+				Goals:          []string{"Rewrite the document"},
+				Constraints: []string{
+					"Use repo grounding as the baseline workspace context.",
+					"Keep timelines out of scope.",
+				},
+				ReadyToStart:  true,
+				OpenQuestions: []string{},
+				ManagerNotes:  "Repo grounding remains sufficient. Keep timelines out of scope.",
+			}), nil
+		case "review":
+			return mustMarshal(t, model.ExpertReview{
+				Lens:            request.Lens,
+				Summary:         "Looks good.",
+				Strengths:       []string{"Clear structure"},
+				Concerns:        []string{},
+				Recommendations: []string{},
+				BlockingRisks:   []string{},
+				RequiresChanges: false,
+			}), nil
+		case "document":
+			documentCalls++
+			if strings.Contains(request.Prompt, "Use repo grounding as the baseline workspace context.") {
+				t.Fatalf("expected document prompt to sanitize leaked repo-grounding constraint, got:\n%s", request.Prompt)
+			}
+			if strings.Contains(request.Prompt, "Repo grounding remains sufficient.") {
+				t.Fatalf("expected document prompt to sanitize leaked repo-grounding note, got:\n%s", request.Prompt)
+			}
+			if !strings.Contains(request.Prompt, "Keep timelines out of scope.") {
+				t.Fatalf("expected document prompt to retain task-relevant brief content, got:\n%s", request.Prompt)
+			}
+			if documentCalls > 1 {
+				sawRetryInstruction = strings.Contains(request.Prompt, `must not contain "repo grounding"`)
+			}
+			markdown := "# Theda Migration Plan\n\nUse repo grounding as the baseline workspace context.\n"
+			if documentCalls > 1 {
+				markdown = "# Theda Migration Plan\n\n## Executive Summary\n\nTimelines are out of scope.\n"
+			}
+			return mustMarshal(t, model.DocumentDraft{
+				Path:          targetFile,
+				Markdown:      markdown,
+				ChangeSummary: "Drafted the migration plan.",
+				Converged:     true,
+			}), nil
+		default:
+			t.Fatalf("unexpected output kind %q", request.OutputKind)
+			return "", nil
+		}
+	}
+
+	engine := NewEngine(
+		fakeProvider{id: model.ProviderCodex, run: handler},
+		fakeProvider{id: model.ProviderClaude, run: handler},
+	)
+
+	run, err := engine.NewRun(NewRunOptions{
+		CWD:             tempDir,
+		OutputRoot:      filepath.Join(tempDir, "runs"),
+		MaxRounds:       1,
+		ManagerProvider: model.ProviderCodex,
+		ExpertProviders: []model.ProviderID{model.ProviderClaude},
+	})
+	if err != nil {
+		t.Fatalf("new run: %v", err)
+	}
+
+	run, err = engine.UpdateBrief(context.Background(), run, "Rewrite the migration plan", nil)
+	if err != nil {
+		t.Fatalf("update brief: %v", err)
+	}
+
+	run, err = engine.RunDiscussion(context.Background(), run, nil)
+	if err != nil {
+		t.Fatalf("run discussion: %v", err)
+	}
+	if documentCalls != 2 {
+		t.Fatalf("expected document generation to retry once after planning-artifact validation, got %d calls", documentCalls)
+	}
+	if !sawRetryInstruction {
+		t.Fatal("expected retry prompt to explicitly forbid the leaked planning artifact")
+	}
+	if run.Status != model.RunStatusConverged {
+		t.Fatalf("expected converged document run after retry, got %s", run.Status)
+	}
+}
+
 func TestEngineNewRunDefaultsMaxRoundsToFive(t *testing.T) {
 	tempDir := t.TempDir()
 	engine := NewEngine(

@@ -146,6 +146,7 @@ Expert panel: %s
 
 func buildInitialDocumentPrompt(run model.RunState) string {
 	targetPath := strings.TrimSpace(run.Brief.TargetFilePath)
+	documentBrief := briefForDocumentPrompt(run.Brief)
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for version 1 of the actual Markdown document.
 
@@ -160,11 +161,12 @@ Set:
 - "converged" to true only if further expert review rounds are unlikely to materially improve the document
 
 Write a complete, self-contained document. Do not return plans, TODOs, review notes, or narration about what you intend to do.
+Do not copy orchestration instructions or internal phrases from the prompt or brief into the document. Never include phrases such as "repo grounding", "stay in planning mode", "return only JSON", "expert review", or "do not edit files" unless the target document genuinely requires those exact words.
 
 Repo grounding: %s
 Brief: %s
 Expert panel: %s
-`, targetPath, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(run.Experts)))
+`, targetPath, mustCompactJSON(run.RepoGrounding), mustCompactJSON(documentBrief), mustCompactJSON(run.Experts)))
 }
 
 func buildExpertReviewPrompt(run model.RunState, proposal model.Proposal, expert model.AgentConfig) string {
@@ -186,6 +188,7 @@ Current proposal: %s
 
 func buildExpertDocumentReviewPrompt(run model.RunState, draft model.DocumentDraft, expert model.AgentConfig, version int) string {
 	lens := strings.ReplaceAll(string(expert.Lens), "_", " ")
+	documentBrief := briefForDocumentPrompt(run.Brief)
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for an expert review.
 
@@ -201,7 +204,7 @@ Brief: %s
 Current document metadata: %s
 Current document markdown:
 %s
-`, version, lens, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(map[string]any{
+`, version, lens, mustCompactJSON(run.RepoGrounding), mustCompactJSON(documentBrief), mustCompactJSON(map[string]any{
 		"path":           draft.Path,
 		"change_summary": draft.ChangeSummary,
 		"converged":      draft.Converged,
@@ -253,6 +256,7 @@ Expert review bundle: %s
 }
 
 func buildDocumentMergePrompt(run model.RunState, current model.DocumentDraft, review model.ExpertReview, expert model.AgentConfig, version int) string {
+	documentBrief := briefForDocumentPrompt(run.Brief)
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for the next full Markdown document version.
 
@@ -261,6 +265,7 @@ Consider exactly one expert review at a time. Incorporate useful feedback, rejec
 If the review does not justify changes, you may return the document unchanged.
 Set "converged" to true only when further expert-review rounds are unlikely to materially improve the document.
 Do not call any write, edit, or create tool.
+Do not copy orchestration instructions or internal phrases from the prompt or brief into the document. Never include phrases such as "repo grounding", "stay in planning mode", "return only JSON", "expert review", or "do not edit files" unless the target document genuinely requires those exact words.
 
 Repo grounding: %s
 Brief: %s
@@ -269,7 +274,7 @@ Current document markdown:
 %s
 Expert reviewer: %s
 Expert review: %s
-`, version, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(map[string]any{
+`, version, mustCompactJSON(run.RepoGrounding), mustCompactJSON(documentBrief), mustCompactJSON(map[string]any{
 		"path":           current.Path,
 		"change_summary": current.ChangeSummary,
 		"converged":      current.Converged,
@@ -280,6 +285,7 @@ Expert review: %s
 }
 
 func buildCombinedDocumentMergePrompt(run model.RunState, current model.DocumentDraft, reviews []reviewBundleItem, version int) string {
+	documentBrief := briefForDocumentPrompt(run.Brief)
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for the next full Markdown document version.
 
@@ -288,6 +294,7 @@ Consider the expert review bundle together. Reconcile conflicts, preserve strong
 If the review bundle does not justify changes, you may return the document unchanged.
 Set "converged" to true only when further expert-review rounds are unlikely to materially improve the document.
 Do not call any write, edit, or create tool.
+Do not copy orchestration instructions or internal phrases from the prompt or brief into the document. Never include phrases such as "repo grounding", "stay in planning mode", "return only JSON", "expert review", or "do not edit files" unless the target document genuinely requires those exact words.
 
 Repo grounding: %s
 Brief: %s
@@ -295,7 +302,7 @@ Current document metadata: %s
 Current document markdown:
 %s
 Expert review bundle: %s
-`, version, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(map[string]any{
+`, version, mustCompactJSON(run.RepoGrounding), mustCompactJSON(documentBrief), mustCompactJSON(map[string]any{
 		"path":           current.Path,
 		"change_summary": current.ChangeSummary,
 		"converged":      current.Converged,
@@ -307,6 +314,7 @@ func buildDocumentDraftPrompt(run model.RunState, proposal model.Proposal) strin
 	if targetPath == "" {
 		targetPath = strings.TrimSpace(run.Brief.TargetFilePath)
 	}
+	documentBrief := briefForDocumentPrompt(run.Brief)
 	return strings.TrimSpace(fmt.Sprintf(`
 Return only JSON for the final Markdown deliverable.
 
@@ -318,12 +326,13 @@ Do not call any write, edit, or create tool. The system will write the returned 
 If the target file already exists, rewrite it into a coherent replacement document rather than returning notes about what should change.
 Do not return planning scaffolding, process narration, or review summaries. Do not say what you will do; do it in the markdown.
 Unless the target document genuinely requires them, avoid proposal headings such as Goals, Constraints, Recommended Plan, Risks, Consensus Notes, Open Questions, and Change Summary.
+Do not copy orchestration instructions or internal phrases from the prompt or brief into the document. Never include phrases such as "repo grounding", "stay in planning mode", "return only JSON", "expert review", or "do not edit files" unless the target document genuinely requires those exact words.
 Set "path" to the target file path and "markdown" to the full final Markdown document.
 
 Repo grounding: %s
 Brief: %s
 Final agreed proposal: %s
-	`, targetPath, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(proposal)))
+	`, targetPath, mustCompactJSON(run.RepoGrounding), mustCompactJSON(documentBrief), mustCompactJSON(proposal)))
 }
 
 func mustJSON(value any) string {

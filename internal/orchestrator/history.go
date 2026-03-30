@@ -164,7 +164,10 @@ func (e *Engine) RerunFromRun(ctx context.Context, source model.RunState, option
 		return model.RunState{}, err
 	}
 
-	run.Brief = source.Brief
+	run.Brief = normalizeBrief(source.Brief, taskHint{
+		Kind:           source.Brief.TaskKind,
+		TargetFilePath: source.Brief.TargetFilePath,
+	})
 	run.ManagerTurns = append([]model.ManagerTurn{}, source.ManagerTurns...)
 	run.Status = model.RunStatusWaiting
 	run.CurrentPhase = "brief_ready"

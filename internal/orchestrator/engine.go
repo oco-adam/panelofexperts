@@ -1530,6 +1530,9 @@ func shouldRetryRequest(err error) bool {
 	if errors.As(err, &invalid) {
 		return true
 	}
+	if isPlanningArtifactError(err) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "timed out") ||
 		strings.Contains(msg, "deadline exceeded") ||
@@ -1593,6 +1596,14 @@ func buildManagerRetryRequest(request model.Request, attempt int, err error) mod
 	var invalid invalidGroundedQuestionsError
 	if errors.As(err, &invalid) {
 		retryRequest.Prompt = strings.TrimSpace(retryRequest.Prompt + "\n\n" + invalid.retryInstruction())
+	}
+	if isPlanningArtifactError(err) {
+		instruction := "Remove orchestration or planning scaffolding from the returned content."
+		if snippet := planningArtifactRetrySnippet(err); snippet != "" {
+			instruction += fmt.Sprintf(" The returned content must not contain %q.", snippet)
+		}
+		instruction += " Do not repeat prompt or brief instructions such as repo grounding, planning mode, return only JSON, expert review, or do not edit files in the output itself."
+		retryRequest.Prompt = strings.TrimSpace(retryRequest.Prompt + "\n\n" + instruction)
 	}
 	return retryRequest
 }
@@ -1664,6 +1675,7 @@ func normalizeBrief(brief model.Brief, hint taskHint) model.Brief {
 	brief.Goals = ensureStringSlice(brief.Goals)
 	brief.Constraints = ensureStringSlice(brief.Constraints)
 	brief.OpenQuestions = ensureStringSlice(brief.OpenQuestions)
+	brief = sanitizeBriefForStorage(brief)
 	if brief.TaskKind == "" {
 		brief.TaskKind = hint.Kind
 	}
@@ -1751,19 +1763,8 @@ func validateDocumentDraft(draft model.DocumentDraft) error {
 	if strings.TrimSpace(draft.Markdown) == "" {
 		return errors.New("document draft markdown is empty")
 	}
-	lower := strings.ToLower(draft.Markdown)
-	for _, snippet := range []string{
-		"stay in planning mode",
-		"return only json",
-		"repo grounding",
-		"expert review",
-		"planning proposal",
-		"manager updated the brief",
-		"do not edit files",
-	} {
-		if strings.Contains(lower, snippet) {
-			return fmt.Errorf("document draft still contains planning artifact %q", snippet)
-		}
+	if snippet, ok := firstDocumentPlanningArtifact(draft.Markdown); ok {
+		return fmt.Errorf("document draft still contains planning artifact %q", snippet)
 	}
 	return nil
 }
