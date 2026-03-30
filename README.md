@@ -318,6 +318,24 @@ Save run artifacts somewhere else:
 poe --output-root /path/to/output
 ```
 
+Browse saved runs in the current repository:
+
+```sh
+poe runs
+```
+
+Resume a failed or interrupted final deliverable phase in place:
+
+```sh
+poe retry --run 20260329-224313-myrepo --deliverable-timeout 2h
+```
+
+Start a fresh rerun from a saved brief with config overrides:
+
+```sh
+poe rerun --run 20260329-224313-myrepo --manager claude --experts gemini,codex --max-rounds 7 --merge sequential
+```
+
 Show build info:
 
 ```sh
@@ -335,6 +353,8 @@ Enable Bubble Tea debug logging:
 ```sh
 poe --debug
 ```
+
+The final deliverable drafting phase now defaults to a `1h` timeout. Use `--deliverable-timeout` on `poe retry` or `poe rerun` to override it for that recovered run.
 
 ## Output Files
 
@@ -360,6 +380,8 @@ Each run gets its own timestamped directory. Common files include:
 - `deliverable.md`: saved copy of the final document for Markdown-writing tasks
 
 For document tasks, the app also writes the final content to the target file path chosen for the task.
+
+`poe runs` reads these saved directories, `poe retry` resumes a saved run in place from a retryable final deliverable phase, and `poe rerun` creates a fresh run directory from a saved brief.
 
 ## Merge Modes
 

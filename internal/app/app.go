@@ -71,6 +71,12 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			return 0
 		case "doctor":
 			return a.runDoctor(ctx, args[1:])
+		case "runs":
+			return a.runRuns(args[1:])
+		case "retry", "resume":
+			return a.runRetry(ctx, args[1:])
+		case "rerun":
+			return a.runRerun(ctx, args[1:])
 		}
 		if !strings.HasPrefix(args[0], "-") {
 			fmt.Fprintf(a.Stderr, "poe: unknown command %q\n\n", args[0])
@@ -104,6 +110,9 @@ func (a *App) runInteractive(args []string) int {
 	if flags.NArg() != 0 {
 		fmt.Fprintf(a.Stderr, "poe: unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
 		return 2
+	}
+	if !flagWasSet(flags, "output-root") && !flagWasSet(flags, "output-dir") {
+		outputRoot = appenv.WorkspaceOutputRoot(cwd)
 	}
 
 	absCWD, err := filepath.Abs(cwd)
@@ -148,6 +157,9 @@ func (a *App) runDoctor(ctx context.Context, args []string) int {
 		fmt.Fprintf(a.Stderr, "poe doctor: unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
 		return 2
 	}
+	if !flagWasSet(flags, "output-root") && !flagWasSet(flags, "output-dir") {
+		outputRoot = appenv.WorkspaceOutputRoot(cwd)
+	}
 
 	absCWD, err := filepath.Abs(cwd)
 	if err != nil {
@@ -190,6 +202,9 @@ func (a *App) printUsage() {
 	fmt.Fprintln(a.Stdout, "  poe [--cwd path] [--output-root path] [--debug]")
 	fmt.Fprintln(a.Stdout, "  poe version")
 	fmt.Fprintln(a.Stdout, "  poe doctor [--cwd path] [--output-root path]")
+	fmt.Fprintln(a.Stdout, "  poe runs [--cwd path] [--output-root path]")
+	fmt.Fprintln(a.Stdout, "  poe retry --run <id-or-path> [--cwd path] [--output-root path] [--deliverable-timeout duration]")
+	fmt.Fprintln(a.Stdout, "  poe rerun --run <id-or-path> [--cwd path] [--output-root path] [--manager provider] [--experts csv] [--max-rounds n] [--merge together|sequential] [--deliverable-timeout duration]")
 }
 
 func defaultEngine() *orchestrator.Engine {

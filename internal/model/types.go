@@ -266,32 +266,35 @@ type RoundState struct {
 }
 
 type RunState struct {
-	ID                string                 `json:"id"`
-	ProjectTitle      string                 `json:"project_title"`
-	CWD               string                 `json:"cwd"`
-	OutputDir         string                 `json:"output_dir"`
-	MaxRounds         int                    `json:"max_rounds"`
-	MergeStrategy     MergeStrategy          `json:"merge_strategy"`
-	CurrentRound      int                    `json:"current_round"`
-	CurrentPhase      string                 `json:"current_phase"`
-	Status            RunStatus              `json:"status"`
-	WaitingSummary    string                 `json:"waiting_summary"`
-	FailureSummary    string                 `json:"failure_summary,omitempty"`
-	StartedAt         time.Time              `json:"started_at"`
-	UpdatedAt         time.Time              `json:"updated_at"`
-	Manager           AgentConfig            `json:"manager"`
-	Experts           []AgentConfig          `json:"experts"`
-	AgentStatuses     map[string]AgentStatus `json:"agent_statuses"`
-	Timeline          []TimelineEntry        `json:"timeline"`
-	RepoGrounding     RepoGrounding          `json:"repo_grounding"`
-	Brief             Brief                  `json:"brief"`
-	ManagerTurns      []ManagerTurn          `json:"manager_turns"`
-	Rounds            []RoundState           `json:"rounds"`
-	FinalProposal     *Proposal              `json:"final_proposal,omitempty"`
-	FinalMarkdown     string                 `json:"final_markdown,omitempty"`
-	FinalMarkdownPath string                 `json:"final_markdown_path,omitempty"`
-	DeliverablePath   string                 `json:"deliverable_path,omitempty"`
-	StopReason        StopReason             `json:"stop_reason"`
+	ID                 string                 `json:"id"`
+	ProjectTitle       string                 `json:"project_title"`
+	CWD                string                 `json:"cwd"`
+	OutputDir          string                 `json:"output_dir"`
+	MaxRounds          int                    `json:"max_rounds"`
+	MergeStrategy      MergeStrategy          `json:"merge_strategy"`
+	DeliverableTimeout time.Duration          `json:"deliverable_timeout,omitempty"`
+	CurrentRound       int                    `json:"current_round"`
+	CurrentPhase       string                 `json:"current_phase"`
+	Status             RunStatus              `json:"status"`
+	WaitingSummary     string                 `json:"waiting_summary"`
+	FailureSummary     string                 `json:"failure_summary,omitempty"`
+	StartedAt          time.Time              `json:"started_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+	Manager            AgentConfig            `json:"manager"`
+	Experts            []AgentConfig          `json:"experts"`
+	AgentStatuses      map[string]AgentStatus `json:"agent_statuses"`
+	Timeline           []TimelineEntry        `json:"timeline"`
+	RepoGrounding      RepoGrounding          `json:"repo_grounding"`
+	Brief              Brief                  `json:"brief"`
+	ManagerTurns       []ManagerTurn          `json:"manager_turns"`
+	Rounds             []RoundState           `json:"rounds"`
+	FinalProposal      *Proposal              `json:"final_proposal,omitempty"`
+	FinalMarkdown      string                 `json:"final_markdown,omitempty"`
+	FinalMarkdownPath  string                 `json:"final_markdown_path,omitempty"`
+	DeliverablePath    string                 `json:"deliverable_path,omitempty"`
+	PendingStatus      RunStatus              `json:"pending_status,omitempty"`
+	PendingStopReason  StopReason             `json:"pending_stop_reason,omitempty"`
+	StopReason         StopReason             `json:"stop_reason"`
 }
 
 func NewRunState(id, cwd, outputDir string, maxRounds int, mergeStrategy MergeStrategy, manager AgentConfig, experts []AgentConfig) RunState {

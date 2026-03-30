@@ -20,12 +20,13 @@ import (
 type SnapshotFn func(model.RunState)
 
 type NewRunOptions struct {
-	CWD             string
-	OutputRoot      string
-	MaxRounds       int
-	MergeStrategy   model.MergeStrategy
-	ManagerProvider model.ProviderID
-	ExpertProviders []model.ProviderID
+	CWD                string
+	OutputRoot         string
+	MaxRounds          int
+	MergeStrategy      model.MergeStrategy
+	DeliverableTimeout time.Duration
+	ManagerProvider    model.ProviderID
+	ExpertProviders    []model.ProviderID
 }
 
 type Engine struct {
@@ -36,7 +37,7 @@ type Engine struct {
 const (
 	managerBriefTimeout        = 5 * time.Minute
 	managerProposalTimeout     = 5 * time.Minute
-	managerDeliverableTimeout  = 8 * time.Minute
+	managerDeliverableTimeout  = 1 * time.Hour
 	defaultExpertReviewTimeout = 10 * time.Minute
 	claudeExpertReviewTimeout  = defaultExpertReviewTimeout
 	promptOnlyRetryTimeout     = 90 * time.Second
@@ -95,8 +96,10 @@ func (e *Engine) NewRun(options NewRunOptions) (model.RunState, error) {
 		return model.RunState{}, err
 	}
 
-	runID := fmt.Sprintf("%s-%s", e.now().Format("20060102-150405"), slugify(filepath.Base(absCWD)))
-	runDir := filepath.Join(absOutputRoot, runID)
+	runID, runDir, err := nextRunLocation(absOutputRoot, absCWD, e.now())
+	if err != nil {
+		return model.RunState{}, err
+	}
 	if _, err := NewStore(runDir); err != nil {
 		return model.RunState{}, err
 	}
@@ -125,6 +128,11 @@ func (e *Engine) NewRun(options NewRunOptions) (model.RunState, error) {
 	}
 
 	run := model.NewRunState(runID, absCWD, runDir, options.MaxRounds, options.MergeStrategy, manager, experts)
+	if options.DeliverableTimeout > 0 {
+		run.DeliverableTimeout = options.DeliverableTimeout
+	} else {
+		run.DeliverableTimeout = managerDeliverableTimeout
+	}
 	store, err := NewStore(run.OutputDir)
 	if err != nil {
 		return model.RunState{}, err
@@ -133,6 +141,24 @@ func (e *Engine) NewRun(options NewRunOptions) (model.RunState, error) {
 		return model.RunState{}, err
 	}
 	return run, nil
+}
+
+func nextRunLocation(outputRoot, cwd string, now time.Time) (string, string, error) {
+	baseID := fmt.Sprintf("%s-%s", now.Format("20060102-150405"), slugify(filepath.Base(cwd)))
+	runID := baseID
+	for suffix := 0; ; suffix++ {
+		if suffix > 0 {
+			runID = fmt.Sprintf("%s-%02d", baseID, suffix)
+		}
+		runDir := filepath.Join(outputRoot, runID)
+		_, err := os.Stat(runDir)
+		if errors.Is(err, os.ErrNotExist) {
+			return runID, runDir, nil
+		}
+		if err != nil {
+			return "", "", err
+		}
+	}
 }
 
 func (e *Engine) UpdateBrief(ctx context.Context, run model.RunState, userMessage string, onSnapshot SnapshotFn) (model.RunState, error) {
@@ -452,6 +478,8 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 finalize:
 	run.FailureSummary = ""
 	run.FinalProposal = &proposal
+	run.PendingStatus = finalStatus
+	run.PendingStopReason = stopReason
 	if run.Brief.TaskKind == model.TaskKindDocument {
 		run.CurrentPhase = "writing_deliverable"
 		run.WaitingSummary = "Waiting on final deliverable draft"
@@ -460,25 +488,13 @@ finalize:
 		_ = store.SaveState(run)
 		notify()
 
-		draft := normalizeDocumentDraft(model.DocumentDraft{
-			Path:     proposal.DeliverablePath,
-			Markdown: proposal.DeliverableMarkdown,
-		}, run.Brief, proposal, run.CWD)
-		if strings.TrimSpace(draft.Markdown) != "" {
-			if err := validateDocumentDraft(draft); err != nil {
-				draft.Markdown = ""
-			}
-		}
-		if strings.TrimSpace(draft.Markdown) == "" {
-			var draftErr error
-			draft, draftErr = e.runManagerDocumentDraft(ctx, managerProvider, &run, proposal, updateProgress)
-			if draftErr != nil {
-				e.markRunFailed(&run, run.Manager.ID, "deliverable_draft_failed", model.StopReasonManagerFailed, "deliverable_draft_failed", draftErr)
-				e.touch(&run)
-				_ = store.SaveState(run)
-				notify()
-				return run, draftErr
-			}
+		draft, draftErr := e.resolveDocumentDraft(ctx, managerProvider, &run, proposal, updateProgress, model.DocumentDraft{})
+		if draftErr != nil {
+			e.markRunFailed(&run, run.Manager.ID, "deliverable_draft_failed", model.StopReasonManagerFailed, "deliverable_draft_failed", draftErr)
+			e.touch(&run)
+			_ = store.SaveState(run)
+			notify()
+			return run, draftErr
 		}
 
 		run.DeliverablePath = draft.Path
@@ -501,6 +517,8 @@ finalize:
 		run.FinalMarkdown = finalMarkdown(run, proposal)
 	}
 	run.StopReason = stopReason
+	run.PendingStatus = ""
+	run.PendingStopReason = ""
 	run.FinalMarkdownPath = filepath.Join(run.OutputDir, "final.md")
 	run.CurrentPhase = "finalized"
 	run.WaitingSummary = ""
@@ -712,7 +730,7 @@ func (e *Engine) runManagerDocumentDraft(
 		Prompt:     buildDocumentDraftPrompt(*run, proposal),
 		JSONSchema: documentDraftSchema,
 		OutputKind: "deliverable",
-		Timeout:    managerDeliverableTimeout,
+		Timeout:    deliverableTimeoutFor(*run),
 	}, progressCh, func(draft model.DocumentDraft) error {
 		return validateDocumentDraft(normalizeDocumentDraft(draft, run.Brief, proposal, run.CWD))
 	}, buildManagerRetryRequest)
@@ -725,6 +743,40 @@ func (e *Engine) runManagerDocumentDraft(
 	draft = normalizeDocumentDraft(draft, run.Brief, proposal, run.CWD)
 	e.appendTimeline(run, run.CurrentRound, run.Manager.ID, "Manager drafted the final deliverable")
 	return draft, nil
+}
+
+func deliverableTimeoutFor(run model.RunState) time.Duration {
+	if run.DeliverableTimeout > 0 {
+		return run.DeliverableTimeout
+	}
+	return managerDeliverableTimeout
+}
+
+func (e *Engine) resolveDocumentDraft(
+	ctx context.Context,
+	provider providers.AgentProvider,
+	run *model.RunState,
+	proposal model.Proposal,
+	updateProgress func(model.ProgressEvent),
+	existing model.DocumentDraft,
+) (model.DocumentDraft, error) {
+	candidates := []model.DocumentDraft{
+		existing,
+		{
+			Path:     proposal.DeliverablePath,
+			Markdown: proposal.DeliverableMarkdown,
+		},
+	}
+	for _, candidate := range candidates {
+		draft := normalizeDocumentDraft(candidate, run.Brief, proposal, run.CWD)
+		if strings.TrimSpace(draft.Markdown) == "" {
+			continue
+		}
+		if err := validateDocumentDraft(draft); err == nil {
+			return draft, nil
+		}
+	}
+	return e.runManagerDocumentDraft(ctx, provider, run, proposal, updateProgress)
 }
 
 func (e *Engine) getProvider(providerID model.ProviderID) (providers.AgentProvider, error) {
