@@ -124,7 +124,14 @@ func TestModelScreenTransitionsAndStatusContent(t *testing.T) {
 		t.Fatalf("expected monitor view to surface title and waiting summary, got:\n%s", monitorView)
 	}
 
-	run.FinalProposal = &model.Proposal{Title: "Final proposal"}
+	run.Brief.TaskKind = model.TaskKindDocument
+	run.CurrentDocument = &model.DocumentDraft{
+		Path:          "/tmp/DESIGN.md",
+		Markdown:      "# Final proposal\n",
+		ChangeSummary: "Initial document version.",
+		Converged:     true,
+	}
+	run.CurrentDocVersion = 1
 	run.FinalMarkdown = "# Final proposal\n"
 	run.FinalMarkdownPath = "/tmp/final.md"
 	run.DeliverablePath = "/tmp/DESIGN.md"
@@ -691,7 +698,14 @@ func TestResultsViewFitsShortWindowAndShowsControls(t *testing.T) {
 	run.ProjectTitle = "Panel UI"
 	run.Status = model.RunStatusConverged
 	run.StopReason = model.StopReasonConverged
-	run.FinalProposal = &model.Proposal{Title: "Final proposal"}
+	run.Brief.TaskKind = model.TaskKindDocument
+	run.CurrentDocument = &model.DocumentDraft{
+		Path:          "/tmp/DESIGN.md",
+		Markdown:      "# Final proposal\n",
+		ChangeSummary: "Final document version.",
+		Converged:     true,
+	}
+	run.CurrentDocVersion = 2
 	run.FinalMarkdownPath = "/tmp/final.md"
 	run.DeliverablePath = "/tmp/DESIGN.md"
 	run.FinalMarkdown = strings.Repeat("Line of final markdown content that should require scrolling.\n", 40)
@@ -701,7 +715,7 @@ func TestResultsViewFitsShortWindowAndShowsControls(t *testing.T) {
 	m.refreshRunViews()
 
 	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "Final proposal ready. Review the markdown below or use the saved file paths above.") {
+	if !strings.Contains(view, "Final document ready. Review the markdown below or use the saved file paths above.") {
 		t.Fatalf("expected results view to explain the next step, got:\n%s", view)
 	}
 	if !strings.Contains(view, "Use up/down or j/k to scroll. Press m to return to the monitor, q to quit.") {

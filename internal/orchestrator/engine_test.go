@@ -235,7 +235,8 @@ This document defines the terminal UI design system for the app.
 
 Use semantic roles for typography, borders, spacing, emphasis, and feedback states so implementation details can evolve without changing the contract.
 `)
-	sawDeliverable := false
+	sawDocumentVersion := false
+	sawReviewOfDocument := false
 
 	handler := func(request model.Request) (string, error) {
 		switch request.OutputKind {
@@ -252,6 +253,10 @@ Use semantic roles for typography, borders, spacing, emphasis, and feedback stat
 				ManagerNotes:   "Ready to draft the document.",
 			}), nil
 		case "review":
+			if !strings.Contains(request.Prompt, "Current document markdown:") || !strings.Contains(request.Prompt, "Document Authority") {
+				t.Fatalf("expected review prompt to include the current document markdown, got:\n%s", request.Prompt)
+			}
+			sawReviewOfDocument = true
 			return mustMarshal(t, model.ExpertReview{
 				Lens:            request.Lens,
 				Summary:         "Looks good.",
@@ -261,32 +266,16 @@ Use semantic roles for typography, borders, spacing, emphasis, and feedback stat
 				BlockingRisks:   []string{},
 				RequiresChanges: false,
 			}), nil
-		case "proposal":
-			return mustMarshal(t, model.Proposal{
-				Title:       "Design System Draft",
-				Context:     "Define the canonical target-state design system for the terminal UI.",
-				Goals:       []string{"Write DESIGN.md"},
-				Constraints: []string{"Keep it accurate", "Stay in planning mode for this step; do not inspect repository files or edit files yet."},
-				RecommendedPlan: []model.PlanItem{
-					{Title: "Document Authority", Details: "Declare `DESIGN.md` as the canonical design-system reference for the TUI."},
-					{Title: "Semantic Tokens", Details: "Define semantic tokens for text hierarchy, surfaces, borders, accent states, feedback states, spacing, and emphasis."},
-				},
-				Risks:               []string{},
-				OpenQuestions:       []string{},
-				ConsensusNotes:      []string{"Ready to write"},
-				DeliverablePath:     targetFile,
-				DeliverableMarkdown: "",
-				Converged:           true,
-				ChangeSummary:       "Finalized the markdown deliverable.",
-			}), nil
-		case "deliverable":
-			sawDeliverable = true
-			if !strings.Contains(strings.ToLower(request.Prompt), "this is no longer a planning or proposal step") {
-				t.Fatalf("expected deliverable prompt to explicitly leave planning mode, got:\n%s", request.Prompt)
+		case "document":
+			sawDocumentVersion = true
+			if !strings.Contains(strings.ToLower(request.Prompt), "artifact itself") {
+				t.Fatalf("expected document prompt to emphasize writing the artifact itself, got:\n%s", request.Prompt)
 			}
 			return mustMarshal(t, model.DocumentDraft{
-				Path:     targetFile,
-				Markdown: finalDocument,
+				Path:          targetFile,
+				Markdown:      finalDocument,
+				ChangeSummary: "Initial document draft is ready for review.",
+				Converged:     true,
 			}), nil
 		default:
 			t.Fatalf("unexpected output kind %q", request.OutputKind)
@@ -319,12 +308,21 @@ Use semantic roles for typography, borders, spacing, emphasis, and feedback stat
 	if err != nil {
 		t.Fatalf("run discussion: %v", err)
 	}
-	if !sawDeliverable {
-		t.Fatalf("expected manager to run a final deliverable drafting pass")
+	if !sawDocumentVersion {
+		t.Fatalf("expected manager to create a document version during the discussion")
+	}
+	if !sawReviewOfDocument {
+		t.Fatalf("expected experts to review the actual document markdown")
 	}
 
 	if run.DeliverablePath != targetFile {
 		t.Fatalf("expected deliverable path %q, got %q", targetFile, run.DeliverablePath)
+	}
+	if run.FinalProposal != nil {
+		t.Fatalf("expected document run to finalize from document versions, got %+v", run.FinalProposal)
+	}
+	if draft := run.LatestDocumentDraft(); draft == nil || strings.TrimSpace(draft.Markdown) != finalDocument {
+		t.Fatalf("expected latest document draft to be preserved, got %+v", draft)
 	}
 	data, err := os.ReadFile(targetFile)
 	if err != nil {
@@ -339,6 +337,11 @@ Use semantic roles for typography, borders, spacing, emphasis, and feedback stat
 	}
 	if string(finalData) != string(data) {
 		t.Fatalf("expected run final artifact to mirror deliverable markdown")
+	}
+	for _, rel := range []string{"document-v001.json", "document-v001.md", "deliverable.json", "deliverable.md"} {
+		if _, err := os.Stat(filepath.Join(run.OutputDir, rel)); err != nil {
+			t.Fatalf("expected artifact %s: %v", rel, err)
+		}
 	}
 }
 
@@ -371,25 +374,12 @@ func TestDocumentRunPersistsRunningStatusWhileDraftingDeliverable(t *testing.T) 
 				BlockingRisks:   []string{},
 				RequiresChanges: false,
 			}), nil
-		case "proposal":
-			return mustMarshal(t, model.Proposal{
-				Title:               "Migration plan rewrite",
-				Context:             "Rewrite the migration plan as the final document.",
-				Goals:               []string{"Rewrite the document"},
-				Constraints:         []string{"Ground it in the repo"},
-				RecommendedPlan:     []model.PlanItem{{Title: "Rewrite", Details: "Draft the final markdown."}},
-				Risks:               []string{},
-				OpenQuestions:       []string{},
-				ConsensusNotes:      []string{"Ready to write"},
-				DeliverablePath:     targetFile,
-				DeliverableMarkdown: "",
-				Converged:           true,
-				ChangeSummary:       "Ready for final drafting.",
-			}), nil
-		case "deliverable":
+		case "document":
 			return mustMarshal(t, model.DocumentDraft{
-				Path:     targetFile,
-				Markdown: "# Final Migration Plan\n",
+				Path:          targetFile,
+				Markdown:      "# Final Migration Plan\n",
+				ChangeSummary: "Wrote the first complete migration plan draft.",
+				Converged:     true,
 			}), nil
 		default:
 			t.Fatalf("unexpected output kind %q", request.OutputKind)

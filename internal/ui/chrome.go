@@ -271,7 +271,7 @@ func providerTone(provider model.ProviderID) chromeTone {
 
 func statusTone(status string) chromeTone {
 	switch strings.TrimSpace(status) {
-	case "ready", string(model.RunStatusComplete), string(model.RunStatusConverged), string(model.AgentStateDone), string(model.StopReasonProposalStable):
+	case "ready", string(model.RunStatusComplete), string(model.RunStatusConverged), string(model.AgentStateDone), string(model.StopReasonProposalStable), string(model.StopReasonDocumentStable):
 		return toneSuccess
 	case "available", string(model.RunStatusWaiting), string(model.AgentStateWaitingOnExperts), string(model.AgentStateWaitingOnManager), string(model.StopReasonAwaitingUser):
 		return toneInfo
@@ -292,7 +292,7 @@ func phaseTone(phase string) chromeTone {
 		return toneDanger
 	}
 	switch phase {
-	case "setup", "manager_brief", "manager_initial_proposal", "expert_reviews", "manager_merge", "writing_deliverable":
+	case "setup", "manager_brief", "manager_initial_proposal", "manager_initial_document", "expert_reviews", "manager_merge", "writing_deliverable":
 		return toneWarning
 	case "brief_ready":
 		return toneInfo

@@ -298,6 +298,21 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 		notify()
 	}
 
+	if run.Brief.TaskKind == model.TaskKindDocument {
+		return e.runDocumentDiscussion(ctx, &run, store, managerProvider, notify, syncSnapshot, updateProgress)
+	}
+	return e.runProposalDiscussion(ctx, &run, store, managerProvider, notify, syncSnapshot, updateProgress)
+}
+
+func (e *Engine) runProposalDiscussion(
+	ctx context.Context,
+	run *model.RunState,
+	store *Store,
+	managerProvider providers.AgentProvider,
+	notify func(),
+	syncSnapshot func(func()),
+	updateProgress func(model.ProgressEvent),
+) (model.RunState, error) {
 	run.Status = model.RunStatusRunning
 	run.CurrentPhase = "manager_initial_proposal"
 	run.FailureSummary = ""
@@ -307,24 +322,24 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 		run.WaitingSummary = "Waiting on manager initial proposal"
 	}
 	run.CurrentRound = 1
-	e.touch(&run)
+	e.touch(run)
 	notify()
 
-	if err := e.prepareRepoGrounding(&run, store, notify); err != nil {
-		return run, err
+	if err := e.prepareRepoGrounding(run, store, notify); err != nil {
+		return *run, err
 	}
 	run.WaitingSummary = "Waiting on manager initial proposal"
-	e.touch(&run)
-	_ = store.SaveState(run)
+	e.touch(run)
+	_ = store.SaveState(*run)
 	notify()
 
-	proposal, version, err := e.runManagerProposal(ctx, managerProvider, &run, store, updateProgress, buildInitialProposalPrompt(run), 1)
+	proposal, version, err := e.runManagerProposal(ctx, managerProvider, run, store, updateProgress, buildInitialProposalPrompt(*run), 1)
 	if err != nil {
-		e.markRunFailed(&run, run.Manager.ID, "manager_initial_proposal_failed", model.StopReasonManagerFailed, "initial_proposal_failed", err)
-		e.touch(&run)
-		_ = store.SaveState(run)
+		e.markRunFailed(run, run.Manager.ID, "manager_initial_proposal_failed", model.StopReasonManagerFailed, "initial_proposal_failed", err)
+		e.touch(run)
+		_ = store.SaveState(*run)
 		notify()
-		return run, err
+		return *run, err
 	}
 
 	stopReason := model.StopReasonDiscussionEnded
@@ -335,7 +350,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 		run.WaitingSummary = "Waiting on expert reviews"
 		run.Status = model.RunStatusRunning
 		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateWaitingOnExperts, "expert_reviews", "Waiting on expert reviews", e.now())
-		e.touch(&run)
+		e.touch(run)
 		notify()
 
 		roundState := model.RoundState{
@@ -345,20 +360,20 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 			StartedAt:       e.now(),
 		}
 
-		reviews, err := e.collectExpertReviews(ctx, &run, store, updateProgress, syncSnapshot, round, proposal)
+		reviews, err := e.collectExpertReviews(ctx, run, store, updateProgress, syncSnapshot, round, proposal)
 		if err != nil {
-			e.markRunFailed(&run, "", "expert_reviews_failed", model.StopReasonExpertsFailed, "", err)
-			e.touch(&run)
-			_ = store.SaveState(run)
+			e.markRunFailed(run, "", "expert_reviews_failed", model.StopReasonExpertsFailed, "", err)
+			e.touch(run)
+			_ = store.SaveState(*run)
 			notify()
-			return run, err
+			return *run, err
 		}
 		for _, review := range reviews {
 			roundState.ExpertReviews = append(roundState.ExpertReviews, review)
 		}
 
 		previousHash := render.ProposalHash(proposal)
-		mergedReviews := collectMergedReviews(run, reviews)
+		mergedReviews := collectMergedReviews(*run, reviews)
 		allNoChanges := true
 		for _, mergedReview := range mergedReviews {
 			if mergedReview.Review.RequiresChanges {
@@ -372,24 +387,24 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 				run.CurrentPhase = "manager_merge"
 				run.WaitingSummary = fmt.Sprintf("Waiting on manager merge for %s", mergedReview.Expert.Name)
 				run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateWaitingOnManager, "manager_merge", "Waiting on manager merge", e.now())
-				e.touch(&run)
+				e.touch(run)
 				notify()
 
 				merged, nextVersion, mergeErr := e.runManagerProposal(
 					ctx,
 					managerProvider,
-					&run,
+					run,
 					store,
 					updateProgress,
-					buildMergePrompt(run, proposal, mergedReview.Review, mergedReview.Expert),
+					buildMergePrompt(*run, proposal, mergedReview.Review, mergedReview.Expert),
 					version+1,
 				)
 				if mergeErr != nil {
-					e.markRunFailed(&run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
-					e.touch(&run)
-					_ = store.SaveState(run)
+					e.markRunFailed(run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
+					e.touch(run)
+					_ = store.SaveState(*run)
 					notify()
-					return run, mergeErr
+					return *run, mergeErr
 				}
 				proposal = merged
 				version = nextVersion
@@ -397,7 +412,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 				roundState.Proposal = proposal
 				syncSnapshot(func() {
 					run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateDone, "review_merged", "Manager incorporated the review", e.now())
-					e.touch(&run)
+					e.touch(run)
 				})
 			}
 		default:
@@ -407,24 +422,24 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 				for _, mergedReview := range mergedReviews {
 					run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateWaitingOnManager, "manager_merge", "Waiting on manager merge", e.now())
 				}
-				e.touch(&run)
+				e.touch(run)
 				notify()
 
 				merged, nextVersion, mergeErr := e.runManagerProposal(
 					ctx,
 					managerProvider,
-					&run,
+					run,
 					store,
 					updateProgress,
-					buildCombinedMergePrompt(run, proposal, buildReviewBundle(mergedReviews)),
+					buildCombinedMergePrompt(*run, proposal, buildReviewBundle(mergedReviews)),
 					version+1,
 				)
 				if mergeErr != nil {
-					e.markRunFailed(&run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
-					e.touch(&run)
-					_ = store.SaveState(run)
+					e.markRunFailed(run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
+					e.touch(run)
+					_ = store.SaveState(*run)
 					notify()
-					return run, mergeErr
+					return *run, mergeErr
 				}
 				proposal = merged
 				version = nextVersion
@@ -434,7 +449,7 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 					for _, mergedReview := range mergedReviews {
 						run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateDone, "review_merged", "Manager incorporated the review", e.now())
 					}
-					e.touch(&run)
+					e.touch(run)
 				})
 			}
 		}
@@ -442,8 +457,8 @@ func (e *Engine) RunDiscussion(ctx context.Context, run model.RunState, onSnapsh
 		now := e.now()
 		roundState.CompletedAt = &now
 		run.Rounds = append(run.Rounds, roundState)
-		e.touch(&run)
-		_ = store.SaveState(run)
+		e.touch(run)
+		_ = store.SaveState(*run)
 		notify()
 
 		newHash := render.ProposalHash(proposal)
@@ -480,42 +495,7 @@ finalize:
 	run.FinalProposal = &proposal
 	run.PendingStatus = finalStatus
 	run.PendingStopReason = stopReason
-	if run.Brief.TaskKind == model.TaskKindDocument {
-		run.CurrentPhase = "writing_deliverable"
-		run.WaitingSummary = "Waiting on final deliverable draft"
-		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateRunning, "writing_deliverable", "Drafting final deliverable", e.now())
-		e.touch(&run)
-		_ = store.SaveState(run)
-		notify()
-
-		draft, draftErr := e.resolveDocumentDraft(ctx, managerProvider, &run, proposal, updateProgress, model.DocumentDraft{})
-		if draftErr != nil {
-			e.markRunFailed(&run, run.Manager.ID, "deliverable_draft_failed", model.StopReasonManagerFailed, "deliverable_draft_failed", draftErr)
-			e.touch(&run)
-			_ = store.SaveState(run)
-			notify()
-			return run, draftErr
-		}
-
-		run.DeliverablePath = draft.Path
-		run.FinalMarkdown = strings.TrimSpace(draft.Markdown) + "\n"
-		if err := writeDeliverableFile(run.DeliverablePath, run.FinalMarkdown); err != nil {
-			e.markRunFailed(&run, run.Manager.ID, "deliverable_write_failed", model.StopReasonManagerFailed, "deliverable_write_failed", err)
-			e.touch(&run)
-			_ = store.SaveState(run)
-			notify()
-			return run, err
-		}
-		_ = store.SaveJSON("deliverable.json", model.DocumentDraft{
-			Path:     run.DeliverablePath,
-			Markdown: strings.TrimSpace(run.FinalMarkdown),
-		})
-		_ = store.SaveText("deliverable.md", run.FinalMarkdown)
-		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateDone, "deliverable_written", "Manager finalized the deliverable", e.now())
-		e.appendTimeline(&run, run.CurrentRound, run.Manager.ID, fmt.Sprintf("Wrote deliverable to %s", run.DeliverablePath))
-	} else {
-		run.FinalMarkdown = finalMarkdown(run, proposal)
-	}
+	run.FinalMarkdown = finalMarkdown(*run, proposal)
 	run.StopReason = stopReason
 	run.PendingStatus = ""
 	run.PendingStopReason = ""
@@ -523,12 +503,241 @@ finalize:
 	run.CurrentPhase = "finalized"
 	run.WaitingSummary = ""
 	run.Status = finalStatus
-	e.appendTimeline(&run, run.CurrentRound, run.Manager.ID, "Manager finalized the discussion")
-	e.touch(&run)
+	e.appendTimeline(run, run.CurrentRound, run.Manager.ID, "Manager finalized the discussion")
+	e.touch(run)
 	_ = store.SaveText("final.md", run.FinalMarkdown)
-	_ = store.SaveState(run)
+	_ = store.SaveState(*run)
 	notify()
-	return run, nil
+	return *run, nil
+}
+
+func (e *Engine) runDocumentDiscussion(
+	ctx context.Context,
+	run *model.RunState,
+	store *Store,
+	managerProvider providers.AgentProvider,
+	notify func(),
+	syncSnapshot func(func()),
+	updateProgress func(model.ProgressEvent),
+) (model.RunState, error) {
+	run.Status = model.RunStatusRunning
+	run.CurrentPhase = "manager_initial_document"
+	run.FailureSummary = ""
+	if run.RepoGrounding.Status != model.RepoGroundingReady || len(run.RepoGrounding.Facts) == 0 {
+		run.WaitingSummary = "Collecting repo grounding"
+	} else {
+		run.WaitingSummary = "Waiting on manager initial document"
+	}
+	run.CurrentRound = 1
+	e.touch(run)
+	notify()
+
+	if err := e.prepareRepoGrounding(run, store, notify); err != nil {
+		return *run, err
+	}
+	run.WaitingSummary = "Waiting on manager initial document"
+	e.touch(run)
+	_ = store.SaveState(*run)
+	notify()
+
+	current, version, err := e.runManagerDocumentVersion(ctx, managerProvider, run, store, updateProgress, buildInitialDocumentPrompt(*run), 1)
+	if err != nil {
+		e.markRunFailed(run, run.Manager.ID, "manager_initial_document_failed", model.StopReasonManagerFailed, "initial_document_failed", err)
+		e.touch(run)
+		_ = store.SaveState(*run)
+		notify()
+		return *run, err
+	}
+
+	stopReason := model.StopReasonDiscussionEnded
+	finalStatus := model.RunStatusComplete
+	for round := 1; round <= run.MaxRounds; round++ {
+		run.CurrentRound = round
+		run.CurrentPhase = "expert_reviews"
+		run.WaitingSummary = "Waiting on expert reviews"
+		run.Status = model.RunStatusRunning
+		run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateWaitingOnExperts, "expert_reviews", "Waiting on expert reviews", e.now())
+		e.touch(run)
+		notify()
+
+		roundState := model.RoundState{
+			Round:           round,
+			DocumentVersion: version,
+			DocumentDraft:   current,
+			StartedAt:       e.now(),
+		}
+
+		reviews, err := e.collectDocumentExpertReviews(ctx, run, store, updateProgress, syncSnapshot, round, current, version)
+		if err != nil {
+			e.markRunFailed(run, "", "expert_reviews_failed", model.StopReasonExpertsFailed, "", err)
+			e.touch(run)
+			_ = store.SaveState(*run)
+			notify()
+			return *run, err
+		}
+		for _, review := range reviews {
+			roundState.ExpertReviews = append(roundState.ExpertReviews, review)
+		}
+
+		previousHash := render.DocumentHash(current)
+		mergedReviews := collectMergedReviews(*run, reviews)
+		allNoChanges := true
+		for _, mergedReview := range mergedReviews {
+			if mergedReview.Review.RequiresChanges {
+				allNoChanges = false
+				break
+			}
+		}
+
+		if !allNoChanges {
+			switch run.MergeStrategy {
+			case model.MergeStrategySequential:
+				for _, mergedReview := range mergedReviews {
+					run.CurrentPhase = "manager_merge"
+					run.WaitingSummary = fmt.Sprintf("Waiting on manager merge for %s", mergedReview.Expert.Name)
+					run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateWaitingOnManager, "manager_merge", "Waiting on manager merge", e.now())
+					e.touch(run)
+					notify()
+
+					merged, nextVersion, mergeErr := e.runManagerDocumentVersion(
+						ctx,
+						managerProvider,
+						run,
+						store,
+						updateProgress,
+						buildDocumentMergePrompt(*run, current, mergedReview.Review, mergedReview.Expert, version+1),
+						version+1,
+					)
+					if mergeErr != nil {
+						e.markRunFailed(run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
+						e.touch(run)
+						_ = store.SaveState(*run)
+						notify()
+						return *run, mergeErr
+					}
+					current = merged
+					version = nextVersion
+					roundState.DocumentVersion = version
+					roundState.DocumentDraft = current
+					syncSnapshot(func() {
+						run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateDone, "review_merged", "Manager revised the document", e.now())
+						e.touch(run)
+					})
+				}
+			default:
+				if len(mergedReviews) > 0 {
+					run.CurrentPhase = "manager_merge"
+					run.WaitingSummary = "Waiting on manager merge"
+					for _, mergedReview := range mergedReviews {
+						run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateWaitingOnManager, "manager_merge", "Waiting on manager merge", e.now())
+					}
+					e.touch(run)
+					notify()
+
+					merged, nextVersion, mergeErr := e.runManagerDocumentVersion(
+						ctx,
+						managerProvider,
+						run,
+						store,
+						updateProgress,
+						buildCombinedDocumentMergePrompt(*run, current, buildReviewBundle(mergedReviews), version+1),
+						version+1,
+					)
+					if mergeErr != nil {
+						e.markRunFailed(run, run.Manager.ID, "manager_merge_failed", model.StopReasonManagerFailed, "merge_failed", mergeErr)
+						e.touch(run)
+						_ = store.SaveState(*run)
+						notify()
+						return *run, mergeErr
+					}
+					current = merged
+					version = nextVersion
+					roundState.DocumentVersion = version
+					roundState.DocumentDraft = current
+					syncSnapshot(func() {
+						for _, mergedReview := range mergedReviews {
+							run.AgentStatuses[mergedReview.Expert.ID] = updateAgentState(run.AgentStatuses[mergedReview.Expert.ID], model.AgentStateDone, "review_merged", "Manager revised the document", e.now())
+						}
+						e.touch(run)
+					})
+				}
+			}
+		}
+
+		now := e.now()
+		roundState.CompletedAt = &now
+		run.Rounds = append(run.Rounds, roundState)
+		e.touch(run)
+		_ = store.SaveState(*run)
+		notify()
+
+		newHash := render.DocumentHash(current)
+		changedAfterExpertFeedback := !allNoChanges && previousHash != newHash
+		if changedAfterExpertFeedback {
+			if round < run.MaxRounds {
+				continue
+			}
+			stopReason = model.StopReasonMaxRounds
+			finalStatus = model.RunStatusComplete
+			goto finalize
+		}
+		switch {
+		case current.Converged:
+			stopReason = model.StopReasonConverged
+			finalStatus = model.RunStatusConverged
+			goto finalize
+		case previousHash == newHash:
+			stopReason = model.StopReasonDocumentStable
+			finalStatus = model.RunStatusConverged
+			goto finalize
+		case allNoChanges:
+			stopReason = model.StopReasonConverged
+			finalStatus = model.RunStatusConverged
+			goto finalize
+		}
+	}
+
+	stopReason = model.StopReasonMaxRounds
+	finalStatus = model.RunStatusComplete
+
+finalize:
+	run.FailureSummary = ""
+	run.PendingStatus = finalStatus
+	run.PendingStopReason = stopReason
+	run.CurrentPhase = "writing_deliverable"
+	run.WaitingSummary = "Writing latest document version"
+	run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateRunning, "writing_deliverable", "Writing latest document version", e.now())
+	e.touch(run)
+	_ = store.SaveState(*run)
+	notify()
+
+	run.DeliverablePath = current.Path
+	run.FinalMarkdown = strings.TrimSpace(current.Markdown) + "\n"
+	if err := writeDeliverableFile(run.DeliverablePath, run.FinalMarkdown); err != nil {
+		e.markRunFailed(run, run.Manager.ID, "deliverable_write_failed", model.StopReasonManagerFailed, "deliverable_write_failed", err)
+		e.touch(run)
+		_ = store.SaveState(*run)
+		notify()
+		return *run, err
+	}
+	_ = store.SaveJSON("deliverable.json", current)
+	_ = store.SaveText("deliverable.md", run.FinalMarkdown)
+	run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateDone, "deliverable_written", "Manager finalized the deliverable", e.now())
+	e.appendTimeline(run, run.CurrentRound, run.Manager.ID, fmt.Sprintf("Wrote deliverable to %s", run.DeliverablePath))
+
+	run.StopReason = stopReason
+	run.PendingStatus = ""
+	run.PendingStopReason = ""
+	run.FinalMarkdownPath = filepath.Join(run.OutputDir, "final.md")
+	run.CurrentPhase = "finalized"
+	run.WaitingSummary = ""
+	run.Status = finalStatus
+	e.appendTimeline(run, run.CurrentRound, run.Manager.ID, "Manager finalized the discussion")
+	e.touch(run)
+	_ = store.SaveText("final.md", run.FinalMarkdown)
+	_ = store.SaveState(*run)
+	notify()
+	return *run, nil
 }
 
 func (e *Engine) collectExpertReviews(
@@ -630,6 +839,106 @@ func (e *Engine) collectExpertReviews(
 	return reviews, nil
 }
 
+func (e *Engine) collectDocumentExpertReviews(
+	ctx context.Context,
+	run *model.RunState,
+	store *Store,
+	updateProgress func(model.ProgressEvent),
+	syncSnapshot func(func()),
+	round int,
+	draft model.DocumentDraft,
+	version int,
+) ([]model.ExpertReview, error) {
+	type outcome struct {
+		index  int
+		agent  model.AgentConfig
+		review model.ExpertReview
+		err    error
+	}
+
+	outcomes := make(chan outcome, len(run.Experts))
+	for i, expert := range run.Experts {
+		go func(index int, agent model.AgentConfig) {
+			provider, err := e.getProvider(agent.Provider)
+			if err != nil {
+				outcomes <- outcome{index: index, agent: agent, err: err}
+				return
+			}
+
+			progressCh := make(chan model.ProgressEvent, 16)
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for event := range progressCh {
+					updateProgress(event)
+				}
+			}()
+
+			reviewTimeout := reviewTimeoutFor(agent.Provider)
+			request := model.Request{
+				RunID:      run.ID,
+				Round:      round,
+				Version:    version,
+				AgentID:    agent.ID,
+				Role:       agent.Role,
+				Lens:       agent.Lens,
+				CWD:        run.CWD,
+				Prompt:     buildExpertDocumentReviewPrompt(*run, draft, agent, version),
+				JSONSchema: reviewSchema,
+				OutputKind: "review",
+				Timeout:    reviewTimeout,
+			}
+			review, runErr := e.runExpertReview(ctx, provider, request, progressCh)
+			close(progressCh)
+			wg.Wait()
+			if runErr != nil {
+				outcomes <- outcome{index: index, agent: agent, err: runErr}
+				return
+			}
+			review.Lens = agent.Lens
+			_ = store.SaveJSON(filepath.Join("reviews", fmt.Sprintf("round-%d", round), agent.ID+".json"), review)
+			outcomes <- outcome{index: index, agent: agent, review: review}
+		}(i, expert)
+	}
+
+	results := make([]outcome, 0, len(run.Experts))
+	successes := 0
+	for range run.Experts {
+		result := <-outcomes
+		results = append(results, result)
+		if result.err == nil {
+			successes++
+			syncSnapshot(func() {
+				run.AgentStatuses[result.agent.ID] = updateAgentState(run.AgentStatuses[result.agent.ID], model.AgentStateDone, "review_complete", result.review.Summary, e.now())
+				e.appendTimeline(run, round, result.agent.ID, fmt.Sprintf("%s reviewed document v%03d with a %s lens", result.agent.Name, version, result.agent.Lens))
+				e.touch(run)
+			})
+		} else {
+			syncSnapshot(func() {
+				run.AgentStatuses[result.agent.ID] = updateAgentState(run.AgentStatuses[result.agent.ID], model.AgentStateError, "review_failed", summarizeError(result.err), e.now())
+				e.appendTimeline(run, round, result.agent.ID, fmt.Sprintf("%s failed: %s", result.agent.Name, summarizeError(result.err)))
+				e.touch(run)
+			})
+		}
+	}
+	if successes == 0 {
+		return nil, errors.New("all expert reviews failed")
+	}
+
+	slices.SortFunc(results, func(a, b outcome) int {
+		return a.index - b.index
+	})
+	reviews := make([]model.ExpertReview, 0, successes)
+	for _, result := range results {
+		if result.err != nil {
+			continue
+		}
+		reviews = append(reviews, result.review)
+	}
+	return reviews, nil
+}
+
 func (e *Engine) runExpertReview(
 	ctx context.Context,
 	provider providers.AgentProvider,
@@ -701,6 +1010,59 @@ func (e *Engine) runManagerProposal(
 	e.touch(run)
 	_ = store.SaveState(*run)
 	return proposal, version, nil
+}
+
+func (e *Engine) runManagerDocumentVersion(
+	ctx context.Context,
+	provider providers.AgentProvider,
+	run *model.RunState,
+	store *Store,
+	updateProgress func(model.ProgressEvent),
+	prompt string,
+	version int,
+) (model.DocumentDraft, int, error) {
+	progressCh := make(chan model.ProgressEvent, 16)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for event := range progressCh {
+			updateProgress(event)
+		}
+	}()
+
+	draft, err := runStructuredRequest[model.DocumentDraft](ctx, provider, model.Request{
+		RunID:      run.ID,
+		Round:      run.CurrentRound,
+		Version:    version,
+		AgentID:    run.Manager.ID,
+		Role:       run.Manager.Role,
+		CWD:        run.CWD,
+		Prompt:     prompt,
+		JSONSchema: documentVersionSchema,
+		OutputKind: "document",
+		Timeout:    deliverableTimeoutFor(*run),
+	}, progressCh, func(draft model.DocumentDraft) error {
+		return validateDocumentDraft(normalizeDocumentDraft(draft, run.Brief, model.Proposal{}, run.CWD))
+	}, buildManagerRetryRequest)
+	close(progressCh)
+	wg.Wait()
+	if err != nil {
+		return model.DocumentDraft{}, version, err
+	}
+
+	draft = normalizeDocumentDraft(draft, run.Brief, model.Proposal{}, run.CWD)
+	filename := fmt.Sprintf("document-v%03d", version)
+	_ = store.SaveJSON(filename+".json", draft)
+	_ = store.SaveText(filename+".md", strings.TrimSpace(draft.Markdown)+"\n")
+
+	run.CurrentDocument = &draft
+	run.CurrentDocVersion = version
+	e.appendTimeline(run, run.CurrentRound, run.Manager.ID, fmt.Sprintf("Manager drafted document v%03d", version))
+	run.AgentStatuses[run.Manager.ID] = updateAgentState(run.AgentStatuses[run.Manager.ID], model.AgentStateDone, "document_complete", draft.ChangeSummary, e.now())
+	e.touch(run)
+	_ = store.SaveState(*run)
+	return draft, version, nil
 }
 
 func (e *Engine) runManagerDocumentDraft(
@@ -1213,7 +1575,11 @@ func buildExpertRetryRequest(request model.Request, attempt int, err error) mode
 	if attempt == maxAgentAttempts {
 		retryRequest.Timeout = promptOnlyRetryTimeout
 		retryRequest.Metadata["workspace_access"] = "none"
-		retryRequest.Prompt = strings.TrimSpace(retryRequest.Prompt + "\n\nRetry mode: do not inspect the repository or use tools. Review only the supplied brief and proposal.")
+		reviewTarget := "proposal"
+		if request.OutputKind == "review" && strings.Contains(strings.ToLower(request.Prompt), "current document markdown") {
+			reviewTarget = "document"
+		}
+		retryRequest.Prompt = strings.TrimSpace(retryRequest.Prompt + "\n\nRetry mode: do not inspect the repository or use tools. Review only the supplied brief and " + reviewTarget + ".")
 	}
 	return retryRequest
 }
@@ -1328,6 +1694,7 @@ func normalizeDocumentDraft(draft model.DocumentDraft, brief model.Brief, propos
 		draft.Path = filepath.Clean(draft.Path)
 	}
 	draft.Markdown = strings.TrimSpace(draft.Markdown)
+	draft.ChangeSummary = strings.TrimSpace(draft.ChangeSummary)
 	return draft
 }
 

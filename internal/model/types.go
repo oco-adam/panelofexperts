@@ -95,6 +95,7 @@ const (
 	StopReasonMaxRounds        StopReason = "max_rounds"
 	StopReasonConverged        StopReason = "converged"
 	StopReasonProposalStable   StopReason = "proposal_stable"
+	StopReasonDocumentStable   StopReason = "document_stable"
 	StopReasonManagerFailed    StopReason = "manager_failed"
 	StopReasonExpertsFailed    StopReason = "experts_failed"
 	StopReasonCancelled        StopReason = "cancelled"
@@ -242,8 +243,10 @@ type Proposal struct {
 }
 
 type DocumentDraft struct {
-	Path     string `json:"path"`
-	Markdown string `json:"markdown"`
+	Path          string `json:"path"`
+	Markdown      string `json:"markdown"`
+	ChangeSummary string `json:"change_summary,omitempty"`
+	Converged     bool   `json:"converged,omitempty"`
 }
 
 type ExpertReview struct {
@@ -258,8 +261,10 @@ type ExpertReview struct {
 
 type RoundState struct {
 	Round           int            `json:"round"`
-	ProposalVersion int            `json:"proposal_version"`
-	Proposal        Proposal       `json:"proposal"`
+	ProposalVersion int            `json:"proposal_version,omitempty"`
+	Proposal        Proposal       `json:"proposal,omitempty"`
+	DocumentVersion int            `json:"document_version,omitempty"`
+	DocumentDraft   DocumentDraft  `json:"document_draft,omitempty"`
 	ExpertReviews   []ExpertReview `json:"expert_reviews"`
 	StartedAt       time.Time      `json:"started_at"`
 	CompletedAt     *time.Time     `json:"completed_at,omitempty"`
@@ -288,6 +293,8 @@ type RunState struct {
 	Brief              Brief                  `json:"brief"`
 	ManagerTurns       []ManagerTurn          `json:"manager_turns"`
 	Rounds             []RoundState           `json:"rounds"`
+	CurrentDocument    *DocumentDraft         `json:"current_document,omitempty"`
+	CurrentDocVersion  int                    `json:"current_doc_version,omitempty"`
 	FinalProposal      *Proposal              `json:"final_proposal,omitempty"`
 	FinalMarkdown      string                 `json:"final_markdown,omitempty"`
 	FinalMarkdownPath  string                 `json:"final_markdown_path,omitempty"`
@@ -380,6 +387,9 @@ func (r RunState) LatestProposal() *Proposal {
 	if len(r.Rounds) == 0 {
 		return nil
 	}
+	if r.Rounds[len(r.Rounds)-1].ProposalVersion <= 0 {
+		return nil
+	}
 	proposal := r.Rounds[len(r.Rounds)-1].Proposal
 	return &proposal
 }
@@ -388,7 +398,37 @@ func (r RunState) LatestProposalVersion() int {
 	if len(r.Rounds) == 0 {
 		return 0
 	}
+	if r.Rounds[len(r.Rounds)-1].ProposalVersion <= 0 {
+		return 0
+	}
 	return r.Rounds[len(r.Rounds)-1].ProposalVersion
+}
+
+func (r RunState) LatestDocumentDraft() *DocumentDraft {
+	if r.CurrentDocument != nil {
+		draft := *r.CurrentDocument
+		return &draft
+	}
+	for i := len(r.Rounds) - 1; i >= 0; i-- {
+		if r.Rounds[i].DocumentVersion <= 0 {
+			continue
+		}
+		draft := r.Rounds[i].DocumentDraft
+		return &draft
+	}
+	return nil
+}
+
+func (r RunState) LatestDocumentVersion() int {
+	if r.CurrentDocVersion > 0 {
+		return r.CurrentDocVersion
+	}
+	for i := len(r.Rounds) - 1; i >= 0; i-- {
+		if r.Rounds[i].DocumentVersion > 0 {
+			return r.Rounds[i].DocumentVersion
+		}
+	}
+	return 0
 }
 
 func (r RunState) DisplayRound() string {

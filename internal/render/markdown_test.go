@@ -59,6 +59,19 @@ func TestProposalHashStable(t *testing.T) {
 	}
 }
 
+func TestDocumentHashTracksRenderedMarkdown(t *testing.T) {
+	draft := model.DocumentDraft{
+		Path:     "/tmp/DESIGN.md",
+		Markdown: "# Stable document\n",
+	}
+	if got, want := DocumentHash(draft), DocumentHash(draft); got != want {
+		t.Fatalf("expected stable document hash, got %q want %q", got, want)
+	}
+	if same := DocumentHash(draft); same == DocumentHash(model.DocumentDraft{Path: draft.Path, Markdown: "# Changed\n"}) {
+		t.Fatalf("expected document hash to change when markdown changes")
+	}
+}
+
 func TestRenderDeliverableMarkdownBuildsDocumentContent(t *testing.T) {
 	run := model.RunState{
 		ProjectTitle: "Panel of Experts",

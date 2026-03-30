@@ -116,6 +116,19 @@ func ProposalHash(proposal model.Proposal) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func DocumentHash(draft model.DocumentDraft) string {
+	payload := struct {
+		Path     string `json:"path"`
+		Markdown string `json:"markdown"`
+	}{
+		Path:     strings.TrimSpace(draft.Path),
+		Markdown: strings.TrimSpace(draft.Markdown),
+	}
+	data, _ := json.Marshal(payload)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func writeSection(b *strings.Builder, title, body string) {
 	body = strings.TrimSpace(body)
 	if body == "" {

@@ -2,7 +2,7 @@
 
 `poe` is a terminal app that runs a structured AI discussion between a manager model and a panel of expert models. It is designed for planning and document work inside a real project directory, then saves the full run history and final output to disk.
 
-In practice, you launch `poe`, pick which providers should act as manager and experts, describe the task, answer any manager follow-up questions, and then let the panel debate until a final proposal or Markdown deliverable is ready.
+In practice, you launch `poe`, pick which providers should act as manager and experts, describe the task, answer any manager follow-up questions, and then let the panel iterate until a final proposal or Markdown deliverable is ready.
 
 ## What The App Does
 
@@ -232,7 +232,7 @@ Example requests:
 - `Write docs/architecture.md explaining how the orchestrator works`
 - `Add a comprehensive README.md that explains installation and usage`
 
-If your request clearly targets a Markdown file, `poe` treats it as a document task and writes the final deliverable to that file when the discussion finishes.
+If your request clearly targets a Markdown file, `poe` treats it as a document task. The manager writes a real document version on each iteration, the experts review that exact document, and the next iteration produces an improved document version until the run converges or hits the round limit. The final version is then written to the target file.
 
 ## Screen-By-Screen Usage
 
@@ -354,7 +354,7 @@ Enable Bubble Tea debug logging:
 poe --debug
 ```
 
-The final deliverable drafting phase now defaults to a `1h` timeout. Use `--deliverable-timeout` on `poe retry` or `poe rerun` to override it for that recovered run.
+Document-generation steps now default to a `1h` timeout. Use `--deliverable-timeout` on `poe retry` or `poe rerun` to override it for that recovered run.
 
 ## Output Files
 
@@ -371,8 +371,10 @@ Each run gets its own timestamped directory. Common files include:
 - `repo-grounding.md`: human-readable grounding summary shown in the brief flow
 - `brief.json`: structured brief
 - `brief.md`: rendered brief
-- `proposal-vNNN.json`: structured manager proposals
-- `proposal-vNNN.md`: rendered proposals
+- `proposal-vNNN.json`: structured manager proposals for planning tasks
+- `proposal-vNNN.md`: rendered proposals for planning tasks
+- `document-vNNN.json`: structured document versions for Markdown-writing tasks
+- `document-vNNN.md`: exact Markdown artifact versions for Markdown-writing tasks
 - `reviews/round-N/*.json`: expert review outputs
 - `events.log`: timeline events
 - `final.md`: final Markdown shown in the UI
@@ -381,7 +383,7 @@ Each run gets its own timestamped directory. Common files include:
 
 For document tasks, the app also writes the final content to the target file path chosen for the task.
 
-`poe runs` reads these saved directories, `poe retry` resumes a saved run in place from a retryable final deliverable phase, and `poe rerun` creates a fresh run directory from a saved brief.
+`poe runs` reads these saved directories, `poe retry` resumes a saved run in place from a retryable final document-write phase or legacy deliverable phase, and `poe rerun` creates a fresh run directory from a saved brief.
 
 ## Merge Modes
 

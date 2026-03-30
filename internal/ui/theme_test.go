@@ -33,6 +33,7 @@ func TestStatusToneMappings(t *testing.T) {
 		string(model.AgentStateParsing):          toneWarning,
 		string(model.AgentStateError):            toneDanger,
 		string(model.StopReasonProposalStable):   toneSuccess,
+		string(model.StopReasonDocumentStable):   toneSuccess,
 		string(model.StopReasonAwaitingUser):     toneInfo,
 		string(model.StopReasonMaxRounds):        toneWarning,
 		string(model.StopReasonUnavailableAgent): toneDanger,
@@ -49,6 +50,7 @@ func TestStatusToneMappings(t *testing.T) {
 func TestPhaseToneMappings(t *testing.T) {
 	cases := map[string]chromeTone{
 		"manager_initial_proposal":        toneWarning,
+		"manager_initial_document":        toneWarning,
 		"brief_ready":                     toneInfo,
 		"finalized":                       toneSuccess,
 		"manager_initial_proposal_failed": toneDanger,

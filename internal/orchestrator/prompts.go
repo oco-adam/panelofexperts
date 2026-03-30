@@ -68,6 +68,18 @@ const documentDraftSchema = `{
   }
 }`
 
+const documentVersionSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["path", "markdown", "change_summary", "converged"],
+  "properties": {
+    "path": {"type": "string"},
+    "markdown": {"type": "string"},
+    "change_summary": {"type": "string"},
+    "converged": {"type": "boolean"}
+  }
+}`
+
 const reviewSchema = `{
   "type": "object",
   "additionalProperties": false,
@@ -132,6 +144,29 @@ Expert panel: %s
 `, run.CWD, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(run.Experts)))
 }
 
+func buildInitialDocumentPrompt(run model.RunState) string {
+	targetPath := strings.TrimSpace(run.Brief.TargetFilePath)
+	return strings.TrimSpace(fmt.Sprintf(`
+Return only JSON for version 1 of the actual Markdown document.
+
+You are writing the artifact itself, not a proposal about future edits.
+Write the best complete document you can right now for %s.
+Use repo grounding first. Inspect repository files read-only, including the existing target file and cited source files, when that improves accuracy or structure.
+Do not call any write, edit, or create tool. The system will persist the returned document version.
+Set:
+- "path" to the target document path
+- "markdown" to the full document content
+- "change_summary" to what this version established or improved
+- "converged" to true only if further expert review rounds are unlikely to materially improve the document
+
+Write a complete, self-contained document. Do not return plans, TODOs, review notes, or narration about what you intend to do.
+
+Repo grounding: %s
+Brief: %s
+Expert panel: %s
+`, targetPath, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(run.Experts)))
+}
+
 func buildExpertReviewPrompt(run model.RunState, proposal model.Proposal, expert model.AgentConfig) string {
 	lens := strings.ReplaceAll(string(expert.Lens), "_", " ")
 	return strings.TrimSpace(fmt.Sprintf(`
@@ -147,6 +182,30 @@ Repo grounding: %s
 Brief: %s
 Current proposal: %s
 `, run.CWD, lens, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(proposal)))
+}
+
+func buildExpertDocumentReviewPrompt(run model.RunState, draft model.DocumentDraft, expert model.AgentConfig, version int) string {
+	lens := strings.ReplaceAll(string(expert.Lens), "_", " ")
+	return strings.TrimSpace(fmt.Sprintf(`
+Return only JSON for an expert review.
+
+You are reviewing version %d of the current document artifact itself.
+Focus on the exact Markdown below, not on abstract future plans.
+Your review lens: %s
+Critique the document constructively and recommend concrete document changes. Set requires_changes to true only when the document should be revised before finalizing.
+You may inspect repository files read-only when that helps verify claims or improve the review.
+Do not call any write, edit, or create tool.
+
+Repo grounding: %s
+Brief: %s
+Current document metadata: %s
+Current document markdown:
+%s
+`, version, lens, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(map[string]any{
+		"path":           draft.Path,
+		"change_summary": draft.ChangeSummary,
+		"converged":      draft.Converged,
+	}), strings.TrimSpace(draft.Markdown)))
 }
 
 func buildMergePrompt(run model.RunState, current model.Proposal, review model.ExpertReview, expert model.AgentConfig) string {
@@ -190,7 +249,57 @@ Repo grounding: %s
 Brief: %s
 Current proposal: %s
 Expert review bundle: %s
-	`, run.CWD, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(reviews)))
+`, run.CWD, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(current), mustCompactJSON(reviews)))
+}
+
+func buildDocumentMergePrompt(run model.RunState, current model.DocumentDraft, review model.ExpertReview, expert model.AgentConfig, version int) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+Return only JSON for the next full Markdown document version.
+
+You are revising the actual document artifact, not writing a plan.
+Consider exactly one expert review at a time. Incorporate useful feedback, reject weak feedback, and return the full updated document for version %d.
+If the review does not justify changes, you may return the document unchanged.
+Set "converged" to true only when further expert-review rounds are unlikely to materially improve the document.
+Do not call any write, edit, or create tool.
+
+Repo grounding: %s
+Brief: %s
+Current document metadata: %s
+Current document markdown:
+%s
+Expert reviewer: %s
+Expert review: %s
+`, version, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(map[string]any{
+		"path":           current.Path,
+		"change_summary": current.ChangeSummary,
+		"converged":      current.Converged,
+	}), strings.TrimSpace(current.Markdown), mustCompactJSON(map[string]any{
+		"name": expert.Name,
+		"lens": expert.Lens,
+	}), mustCompactJSON(review)))
+}
+
+func buildCombinedDocumentMergePrompt(run model.RunState, current model.DocumentDraft, reviews []reviewBundleItem, version int) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+Return only JSON for the next full Markdown document version.
+
+You are revising the actual document artifact, not writing a plan.
+Consider the expert review bundle together. Reconcile conflicts, preserve strong feedback, reject weak or duplicative suggestions, and return the full updated document for version %d.
+If the review bundle does not justify changes, you may return the document unchanged.
+Set "converged" to true only when further expert-review rounds are unlikely to materially improve the document.
+Do not call any write, edit, or create tool.
+
+Repo grounding: %s
+Brief: %s
+Current document metadata: %s
+Current document markdown:
+%s
+Expert review bundle: %s
+`, version, mustCompactJSON(run.RepoGrounding), mustCompactJSON(run.Brief), mustCompactJSON(map[string]any{
+		"path":           current.Path,
+		"change_summary": current.ChangeSummary,
+		"converged":      current.Converged,
+	}), strings.TrimSpace(current.Markdown), mustCompactJSON(reviews)))
 }
 
 func buildDocumentDraftPrompt(run model.RunState, proposal model.Proposal) string {

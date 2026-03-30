@@ -480,7 +480,7 @@ func (m *Model) updateMonitor(msg tea.KeyMsg) tea.Cmd {
 	case "ctrl+c", "q":
 		return tea.Quit
 	case "r":
-		if m.run.FinalProposal != nil {
+		if m.runHasFinalResult() {
 			m.screen = screenResults
 		}
 	}
@@ -740,7 +740,7 @@ func (m Model) monitorHeaderBlock() string {
 
 func (m Model) monitorFooterBlock() string {
 	blocks := []string{}
-	if m.run.FinalProposal != nil {
+	if m.runHasFinalResult() {
 		blocks = append(blocks, m.chrome.banner("Ready", "Discussion finished. Press r to view the final markdown.", toneSuccess))
 	} else if m.inFlight {
 		blocks = append(blocks, m.chrome.banner("Running", "Orchestration is active", toneWarning))
@@ -768,8 +768,15 @@ func (m Model) resultsTopBlock() string {
 		savedLines = append(savedLines, m.chrome.labeledLine("Deliverable file", m.run.DeliverablePath))
 	}
 
+	title := "Final Proposal"
+	readyMessage := "Final proposal ready. Review the markdown below or use the saved file paths above."
+	if m.run.Brief.TaskKind == model.TaskKindDocument {
+		title = "Final Document"
+		readyMessage = "Final document ready. Review the markdown below or use the saved file paths above."
+	}
+
 	blocks := []string{
-		m.chrome.header(m.run.ProjectTitle, "Final Proposal", ""),
+		m.chrome.header(m.run.ProjectTitle, title, ""),
 		meta,
 		m.chrome.panelBlock("Saved Outputs", strings.Join(savedLines, "\n"), m.layout.contentWidth, toneInfo),
 	}
@@ -777,7 +784,7 @@ func (m Model) resultsTopBlock() string {
 		blocks = append(blocks, m.chrome.banner("Failure", failureSummary, toneDanger))
 	}
 	blocks = append(blocks,
-		m.chrome.banner("Ready", "Final proposal ready. Review the markdown below or use the saved file paths above.", toneSuccess),
+		m.chrome.banner("Ready", readyMessage, toneSuccess),
 		m.chrome.muted.Render("Use up/down or j/k to scroll. Press m to return to the monitor, q to quit."),
 	)
 	if m.err != "" && m.err != m.currentFailureSummary() {
@@ -1200,10 +1207,24 @@ func (m Model) resultContent() string {
 	if m.run.FinalMarkdown != "" {
 		return m.run.FinalMarkdown
 	}
+	if draft := m.run.LatestDocumentDraft(); draft != nil && strings.TrimSpace(draft.Markdown) != "" {
+		return strings.TrimSpace(draft.Markdown) + "\n"
+	}
 	if proposal := m.run.LatestProposal(); proposal != nil {
 		return render.RenderProposalMarkdown(*proposal, m.run)
 	}
-	return "No final proposal yet."
+	return "No final artifact yet."
+}
+
+func (m Model) runHasFinalResult() bool {
+	if strings.TrimSpace(m.run.FinalMarkdown) != "" {
+		return true
+	}
+	if draft := m.run.LatestDocumentDraft(); draft != nil && strings.TrimSpace(draft.Markdown) != "" &&
+		(m.run.Status == model.RunStatusComplete || m.run.Status == model.RunStatusConverged) {
+		return true
+	}
+	return m.run.FinalProposal != nil
 }
 
 func orderedStatusesForView(run model.RunState) []model.AgentStatus {

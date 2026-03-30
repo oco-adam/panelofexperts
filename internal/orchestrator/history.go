@@ -197,7 +197,7 @@ func canResumeDeliverable(run model.RunState) bool {
 	if run.Brief.TaskKind != model.TaskKindDocument {
 		return false
 	}
-	if run.FinalProposal == nil && run.LatestProposal() == nil {
+	if run.FinalProposal == nil && run.LatestProposal() == nil && run.LatestDocumentDraft() == nil {
 		return false
 	}
 	switch strings.TrimSpace(run.CurrentPhase) {
@@ -213,6 +213,11 @@ func (e *Engine) resumeDeliverable(ctx context.Context, run model.RunState, onSn
 	if err != nil {
 		return run, err
 	}
+
+	if latestDocument := run.LatestDocumentDraft(); latestDocument != nil && strings.TrimSpace(run.CurrentPhase) != "deliverable_draft_failed" {
+		return e.resumeDocumentWrite(run, store, *latestDocument, onSnapshot)
+	}
+
 	managerProvider, err := e.getProvider(run.Manager.Provider)
 	if err != nil {
 		return run, err
@@ -305,6 +310,69 @@ func (e *Engine) resumeDeliverable(ctx context.Context, run model.RunState, onSn
 	e.appendTimeline(&run, run.CurrentRound, run.Manager.ID, fmt.Sprintf("Wrote deliverable to %s", run.DeliverablePath))
 
 	status, stopReason := resumeOutcome(run, *proposal)
+	run.PendingStatus = ""
+	run.PendingStopReason = ""
+	run.Status = status
+	run.StopReason = stopReason
+	run.FinalMarkdownPath = filepath.Join(run.OutputDir, "final.md")
+	run.CurrentPhase = "finalized"
+	run.WaitingSummary = ""
+	e.appendTimeline(&run, run.CurrentRound, run.Manager.ID, "Manager finalized the discussion")
+	e.touch(&run)
+	_ = store.SaveText("final.md", run.FinalMarkdown)
+	_ = store.SaveState(run)
+	notify()
+	return run, nil
+}
+
+func (e *Engine) resumeDocumentWrite(run model.RunState, store *Store, draft model.DocumentDraft, onSnapshot SnapshotFn) (model.RunState, error) {
+	draft = normalizeDocumentDraft(draft, run.Brief, model.Proposal{}, run.CWD)
+	notify := func() {
+		if onSnapshot == nil {
+			return
+		}
+		onSnapshot(run.Clone())
+	}
+
+	run.Status = model.RunStatusRunning
+	run.CurrentPhase = "writing_deliverable"
+	run.StopReason = model.StopReasonDiscussionEnded
+	run.FailureSummary = ""
+	run.WaitingSummary = "Writing latest document version"
+	run.AgentStatuses[run.Manager.ID] = updateAgentState(
+		run.AgentStatuses[run.Manager.ID],
+		model.AgentStateRunning,
+		"writing_deliverable",
+		"Retrying final document write",
+		e.now(),
+	)
+	e.appendTimeline(&run, run.CurrentRound, run.Manager.ID, "Resuming final document write")
+	e.touch(&run)
+	_ = store.SaveState(run)
+	notify()
+
+	run.DeliverablePath = draft.Path
+	run.FinalMarkdown = strings.TrimSpace(draft.Markdown) + "\n"
+	if err := writeDeliverableFile(run.DeliverablePath, run.FinalMarkdown); err != nil {
+		e.markRunFailed(&run, run.Manager.ID, "deliverable_write_failed", model.StopReasonManagerFailed, "deliverable_write_failed", err)
+		e.touch(&run)
+		_ = store.SaveState(run)
+		notify()
+		return run, err
+	}
+
+	_ = store.SaveJSON("deliverable.json", draft)
+	_ = store.SaveText("deliverable.md", run.FinalMarkdown)
+	run.AgentStatuses[run.Manager.ID] = updateAgentState(
+		run.AgentStatuses[run.Manager.ID],
+		model.AgentStateDone,
+		"deliverable_written",
+		"Manager finalized the deliverable",
+		e.now(),
+	)
+	e.appendTimeline(&run, run.CurrentRound, run.Manager.ID, fmt.Sprintf("Wrote deliverable to %s", run.DeliverablePath))
+
+	status, stopReason := resumeOutcome(run, model.Proposal{Converged: draft.Converged})
 	run.PendingStatus = ""
 	run.PendingStopReason = ""
 	run.Status = status
