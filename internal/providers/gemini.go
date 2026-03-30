@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"os"
+	"strings"
 
 	"panelofexperts/internal/model"
 )
@@ -54,7 +55,7 @@ func (p *GeminiProvider) Run(ctx context.Context, request model.Request, progres
 	execCWD := request.CWD
 	args := []string{
 		"--model", "gemini-2.5-flash",
-		"--prompt", request.Prompt,
+		"--prompt", geminiPrompt(request),
 		"--output-format", "json",
 		"--approval-mode", "plan",
 	}
@@ -74,4 +75,21 @@ func (p *GeminiProvider) Run(ctx context.Context, request model.Request, progres
 		progress,
 		nil,
 	)
+}
+
+func geminiPrompt(request model.Request) string {
+	prompt := strings.TrimSpace(request.Prompt)
+	schema := strings.TrimSpace(request.JSONSchema)
+	if schema == "" {
+		return prompt
+	}
+	return strings.TrimSpace(prompt + `
+
+Return exactly one JSON object that matches this JSON Schema.
+Do not wrap the JSON in markdown fences.
+Do not include commentary, explanations, or extra keys.
+Use empty arrays instead of null for array fields with no items.
+
+JSON Schema:
+` + schema)
 }

@@ -945,7 +945,13 @@ func (e *Engine) runExpertReview(
 	request model.Request,
 	progress chan<- model.ProgressEvent,
 ) (model.ExpertReview, error) {
-	return runStructuredRequest[model.ExpertReview](ctx, provider, request, progress, nil, buildExpertRetryRequest)
+	review, err := runStructuredRequest[model.ExpertReview](ctx, provider, request, progress, func(review model.ExpertReview) error {
+		return validateExpertReview(normalizeExpertReview(review, request.Lens))
+	}, buildExpertRetryRequest)
+	if err != nil {
+		return model.ExpertReview{}, err
+	}
+	return normalizeExpertReview(review, request.Lens), nil
 }
 
 func (e *Engine) runManagerBrief(
@@ -1320,41 +1326,62 @@ func (e *Engine) markRunFailed(
 func parseProviderOutput[T any](provider model.ProviderID, raw string) (T, error) {
 	var zero T
 
-	tryWrapped := func(candidate string) (T, bool) {
+	tryWrapped := func(candidate string) (T, bool, error) {
 		var wrapped struct {
 			Response         json.RawMessage `json:"response"`
 			StructuredOutput json.RawMessage `json:"structured_output"`
+			SessionID        string          `json:"session_id"`
+			Stats            json.RawMessage `json:"stats"`
 		}
 		if err := json.Unmarshal([]byte(strings.TrimSpace(candidate)), &wrapped); err != nil {
-			return zero, false
+			return zero, false, nil
 		}
+		handled := len(wrapped.StructuredOutput) > 0 ||
+			len(wrapped.Response) > 0 ||
+			strings.TrimSpace(wrapped.SessionID) != "" ||
+			len(wrapped.Stats) > 0
+		if !handled {
+			return zero, false, nil
+		}
+		var parseErr error
 		if len(wrapped.StructuredOutput) > 0 {
 			if value, err := decodeDirect[T](string(wrapped.StructuredOutput)); err == nil {
-				return value, true
+				return value, true, nil
+			} else {
+				parseErr = err
 			}
 		}
 		if len(wrapped.Response) > 0 && wrapped.Response[0] == '"' {
 			var inner string
 			if err := json.Unmarshal(wrapped.Response, &inner); err == nil {
 				if value, err := decodeDirect[T](inner); err == nil {
-					return value, true
+					return value, true, nil
+				} else if parseErr == nil {
+					parseErr = err
 				}
+			} else if parseErr == nil {
+				parseErr = err
 			}
 		}
 		if len(wrapped.Response) > 0 {
 			if value, err := decodeDirect[T](string(wrapped.Response)); err == nil {
-				return value, true
+				return value, true, nil
+			} else if parseErr == nil {
+				parseErr = err
 			}
 		}
-		return zero, false
+		if parseErr != nil {
+			return zero, true, fmt.Errorf("unable to parse wrapped %s response as %T: %w", provider, zero, parseErr)
+		}
+		return zero, true, fmt.Errorf("unable to parse wrapped %s response as %T: missing structured payload", provider, zero)
 	}
 
-	if value, ok := tryWrapped(raw); ok {
-		return value, nil
+	if value, ok, err := tryWrapped(raw); ok {
+		return value, err
 	}
 	if candidate, err := extractTrailingJSONObject(raw); err == nil {
-		if value, ok := tryWrapped(candidate); ok {
-			return value, nil
+		if value, ok, wrappedErr := tryWrapped(candidate); ok {
+			return value, wrappedErr
 		}
 	}
 	if value, err := decodeDirect[T](raw); err == nil {
@@ -1698,6 +1725,25 @@ func normalizeDocumentDraft(draft model.DocumentDraft, brief model.Brief, propos
 	return draft
 }
 
+func normalizeExpertReview(review model.ExpertReview, lens model.ExpertLens) model.ExpertReview {
+	if review.Lens == "" {
+		review.Lens = lens
+	}
+	review.Summary = strings.TrimSpace(review.Summary)
+	review.Strengths = normalizeStringSlice(review.Strengths)
+	review.Concerns = normalizeStringSlice(review.Concerns)
+	review.Recommendations = normalizeStringSlice(review.Recommendations)
+	review.BlockingRisks = normalizeStringSlice(review.BlockingRisks)
+	return review
+}
+
+func validateExpertReview(review model.ExpertReview) error {
+	if strings.TrimSpace(review.Summary) == "" {
+		return errors.New("expert review summary is empty")
+	}
+	return nil
+}
+
 func validateDocumentDraft(draft model.DocumentDraft) error {
 	if strings.TrimSpace(draft.Path) == "" {
 		return errors.New("document draft path is empty")
@@ -1720,6 +1766,24 @@ func validateDocumentDraft(draft model.DocumentDraft) error {
 		}
 	}
 	return nil
+}
+
+func normalizeStringSlice(items []string) []string {
+	if len(items) == 0 {
+		return []string{}
+	}
+	normalized := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		normalized = append(normalized, item)
+	}
+	if len(normalized) == 0 {
+		return []string{}
+	}
+	return normalized
 }
 
 func ensureStringSlice(items []string) []string {

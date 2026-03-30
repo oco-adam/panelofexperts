@@ -191,7 +191,7 @@ printf '{"response":"{\"lens\":\"architecture\",\"summary\":\"ok\",\"strengths\"
 		Role:       model.RoleExpert,
 		CWD:        dir,
 		Prompt:     "review the plan",
-		JSONSchema: "{}",
+		JSONSchema: `{"type":"object","required":["summary"]}`,
 		OutputKind: "review",
 		Timeout:    time.Minute,
 	}, make(chan model.ProgressEvent, 4))
@@ -204,11 +204,26 @@ printf '{"response":"{\"lens\":\"architecture\",\"summary\":\"ok\",\"strengths\"
 			t.Fatalf("expected gemini args to contain %q, got:\n%s", expected, args)
 		}
 	}
+	for _, expected := range []string{"Return exactly one JSON object that matches this JSON Schema.", "JSON Schema:", `"required":["summary"]`} {
+		if !strings.Contains(args, expected) {
+			t.Fatalf("expected gemini prompt to contain %q, got:\n%s", expected, args)
+		}
+	}
 	if strings.TrimSpace(mustRead(t, cwdFile)) != dir {
 		t.Fatalf("expected gemini to run in request cwd when workspace access is allowed")
 	}
 	if !strings.Contains(result.Stdout, `"response"`) {
 		t.Fatalf("expected gemini stdout to contain wrapped response, got %q", result.Stdout)
+	}
+}
+
+func TestGeminiPromptOmitsSchemaSuffixWhenUnavailable(t *testing.T) {
+	got := geminiPrompt(model.Request{
+		Prompt:     "review the plan",
+		JSONSchema: "",
+	})
+	if got != "review the plan" {
+		t.Fatalf("expected prompt to pass through unchanged, got %q", got)
 	}
 }
 

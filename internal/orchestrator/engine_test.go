@@ -1109,6 +1109,11 @@ Capabilities: {
 	if !gotNoisyGemini.OK {
 		t.Fatal("expected noisy gemini wrapper to parse response content")
 	}
+
+	badGeminiRaw := `{"session_id":"abc","response":"not valid json","stats":{"models":{}}}`
+	if _, err := parseProviderOutput[payload](model.ProviderGemini, badGeminiRaw); err == nil {
+		t.Fatal("expected invalid wrapped gemini response to fail parsing")
+	}
 }
 
 func TestReviewTimeoutForExpertsUsesConfiguredDurations(t *testing.T) {
@@ -1120,6 +1125,48 @@ func TestReviewTimeoutForExpertsUsesConfiguredDurations(t *testing.T) {
 	}
 	if got := reviewTimeoutFor(model.ProviderCodex); got != defaultExpertReviewTimeout {
 		t.Fatalf("expected default timeout %s for codex, got %s", defaultExpertReviewTimeout, got)
+	}
+}
+
+func TestRunExpertReviewRetriesInvalidStructuredOutput(t *testing.T) {
+	attempts := []model.Request{}
+	provider := fakeProvider{
+		id: model.ProviderGemini,
+		run: func(request model.Request) (string, error) {
+			attempts = append(attempts, request)
+			if len(attempts) < 3 {
+				return `{"session_id":"abc","response":"I have several concerns but I am not returning schema JSON.","stats":{"models":{}}}`, nil
+			}
+			return `{"response":"{\"summary\":\"Recovered with structured output.\",\"strengths\":[\"Calls out the strongest architectural choice.\"],\"concerns\":[\"Names the main delivery risk.\"],\"recommendations\":[\"Add a concrete acceptance gate.\"],\"blocking_risks\":[],\"requires_changes\":true}"}`, nil
+		},
+	}
+
+	engine := NewEngine(provider)
+	review, err := engine.runExpertReview(context.Background(), provider, model.Request{
+		RunID:      "run-1",
+		Round:      1,
+		AgentID:    "expert-3",
+		Role:       model.RoleExpert,
+		Lens:       model.LensRiskQA,
+		Prompt:     "Review the proposal",
+		JSONSchema: reviewSchema,
+		OutputKind: "review",
+		Timeout:    time.Minute,
+	}, make(chan model.ProgressEvent, 8))
+	if err != nil {
+		t.Fatalf("run expert review: %v", err)
+	}
+	if len(attempts) != 3 {
+		t.Fatalf("expected three attempts, got %d", len(attempts))
+	}
+	if !strings.Contains(attempts[1].Prompt, "Retry attempt 2 of 3.") {
+		t.Fatalf("expected second attempt to include retry instructions, got:\n%s", attempts[1].Prompt)
+	}
+	if review.Lens != model.LensRiskQA {
+		t.Fatalf("expected review lens to be normalized from the request, got %+v", review)
+	}
+	if review.Summary != "Recovered with structured output." {
+		t.Fatalf("expected structured retry review to be returned, got %+v", review)
 	}
 }
 
